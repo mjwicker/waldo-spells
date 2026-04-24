@@ -1,0 +1,11 @@
+node_modules/
+dist/
+*.zip
+*.xpi
+.web-ext-artifacts/
+.DS_Store
+*.log
+web-ext-config.js
+models/
+*.bin
+*.onnx
