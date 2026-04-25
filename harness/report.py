@@ -5,6 +5,8 @@ import csv
 import sys
 from pathlib import Path
 
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.dirname(__file__))
 from corpus import load_corpus
 from runner import run_all
 from metrics import by_input_type, by_tier, latency_stats
