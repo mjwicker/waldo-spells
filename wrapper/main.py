@@ -92,6 +92,7 @@ def stdin_loop() -> int:
             # Skip empty lines
             continue
 
+        request = None
         try:
             request = Request.from_json(line)
         except json.JSONDecodeError as e:
