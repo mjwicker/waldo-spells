@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      font-size: 14px;
+      background: #1a1a2e;
+      color: #d0d0e8;
+      padding: 14px 16px 16px;
+      min-width: 210px;
+    }
+    h1 {
+      font-size: 15px;
+      font-weight: 700;
+      color: #a0a0ff;
+      margin-bottom: 14px;
+      letter-spacing: .02em;
+    }
+    .row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+    .label { color: #b0b0cc; }
+    .status {
+      font-size: 12px;
+      font-weight: 500;
+      color: #666;
+    }
+    .status.ok  { color: #5c9; }
+    .status.err { color: #c66; }
+
+    /* Toggle switch */
+    .toggle { position: relative; display: inline-block; width: 40px; height: 22px; }
+    .toggle input { opacity: 0; width: 0; height: 0; }
+    .slider {
+      position: absolute; inset: 0;
+      background: #3a3a5a;
+      border-radius: 22px;
+      cursor: pointer;
+      transition: background .2s;
+    }
+    .slider::before {
+      content: "";
+      position: absolute;
+      width: 16px; height: 16px;
+      left: 3px; top: 3px;
+      background: #888;
+      border-radius: 50%;
+      transition: transform .2s, background .2s;
+    }
+    input:checked + .slider            { background: #4040a0; }
+    input:checked + .slider::before   { transform: translateX(18px); background: #c0c0ff; }
+  </style>
+</head>
+<body>
+  <h1>Waldo Spells</h1>
+
+  <div class="row">
+    <span class="label">Enabled</span>
+    <label class="toggle" title="Enable or disable checking">
+      <input type="checkbox" id="toggle" checked>
+      <span class="slider"></span>
+    </label>
+  </div>
+
+  <div class="row">
+    <span class="label">Server</span>
+    <span class="status" id="server-status">checking…</span>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
