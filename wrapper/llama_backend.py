@@ -52,7 +52,7 @@ def _host() -> str:
 
 
 def _port() -> int:
-    return int(os.environ.get("LLAMA_SERVER_PORT", "8080"))
+    return int(os.environ.get("LLAMA_SERVER_PORT", "8081"))
 
 
 def is_available() -> bool:
@@ -127,10 +127,8 @@ def _stop_server() -> None:
 
 _SYSTEM_PROMPT = """\
 You are a grammar correction tool. Identify grammatical errors in the text.
-Return ONLY a JSON object with this exact schema — no prose, no markdown:
-{"corrections": [{"original": "wrong word or phrase", "suggestion": "corrected form", \
-"offset": <int char offset in input>, "length": <int char length of original>, \
-"rule": "short rule label e.g. then/than or affect/effect"}]}
+Return ONLY a JSON object — no prose, no markdown, no extra fields:
+{"corrections": [{"original": "wrong word or phrase", "suggestion": "corrected form"}]}
 If there are no errors, return: {"corrections": []}
 Preserve the author's meaning. Do not paraphrase or rewrite. Flag only clear errors."""
 
@@ -166,7 +164,7 @@ def correct(text: str, context_hint: Optional[str] = None) -> List[Correction]:
             {"role": "user", "content": user_content},
         ],
         "temperature": 0.0,
-        "max_tokens": 512,
+        "max_tokens": 1024,
         "response_format": {"type": "json_object"},
     }
 
@@ -194,20 +192,32 @@ def correct(text: str, context_hint: Optional[str] = None) -> List[Correction]:
         return []
 
     corrections: List[Correction] = []
+    seen_starts: set = set()
     for item in data.get("corrections", []):
         try:
-            start = int(item["offset"])
-            length = int(item["length"])
-            end = start + length
-            if start < 0 or end > len(text):
+            original = item["original"]
+            suggestion = item["suggestion"]
+            if not original or not suggestion:
                 continue
-            if text[start:end] != item.get("original", ""):
+            # LLMs report unreliable offsets — find the span ourselves.
+            start = text.find(original)
+            if start == -1:
+                # Try case-insensitive match
+                lower_text = text.lower()
+                lower_orig = original.lower()
+                start = lower_text.find(lower_orig)
+                if start == -1:
+                    continue
+                original = text[start:start + len(original)]
+            if start in seen_starts:
                 continue
+            seen_starts.add(start)
+            end = start + len(original)
             corrections.append(Correction(
                 start=start,
                 end=end,
-                original=item["original"],
-                suggestions=[item["suggestion"]],
+                original=original,
+                suggestions=[suggestion],
                 type="grammar",
             ))
         except (KeyError, TypeError, ValueError):
