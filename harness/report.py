@@ -239,11 +239,21 @@ def main() -> None:
         tier_rows = [r for r in results if r.tier == tier]
         if not tier_rows:
             continue
-        unavailable = sum(1 for r in tier_rows if not r.available)
-        ratio = unavailable / len(tier_rows)
+        # tier_not_applicable rows are expected skips (grammar errors vs. spell-check tier)
+        # — they do not count toward the tier_unavailable failure check.
+        not_applicable = sum(
+            1 for r in tier_rows
+            if not r.available and (r.error or "").startswith("tier_not_applicable")
+        )
+        unavailable = sum(
+            1 for r in tier_rows
+            if not r.available and not (r.error or "").startswith("tier_not_applicable")
+        )
+        eligible = len(tier_rows) - not_applicable
+        ratio = unavailable / eligible if eligible > 0 else 0.0
         if ratio >= 0.95:
             print(
-                f"ERROR: Tier '{tier}': {unavailable}/{len(tier_rows)} rows "
+                f"ERROR: Tier '{tier}': {unavailable}/{eligible} eligible rows "
                 f"tier_unavailable ({ratio:.0%}). Check model path or backend.",
                 file=sys.stderr,
             )

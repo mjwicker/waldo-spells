@@ -9,9 +9,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent / "wrapper"))
 sys.path.insert(0, str(Path(__file__).parent))
 
-from corpus import load_corpus
+from corpus import load_corpus, CorpusItem
 from runner import run_one, run_all
-from metrics import latency_stats, string_match_rate, by_error_type
+from metrics import latency_stats, string_match_rate, by_error_type, by_tier
 from report import check_quality_gate, QUALITY_GATE_F1
 
 
@@ -152,6 +152,67 @@ class TestAlign:
         from sources.align import diff_to_spans
         spans = diff_to_spans("hello world", "hello world")
         assert spans == []
+
+
+class TestSkipTiers:
+    """Tests for skip_tiers field — fast tier exemption for grammar-error items."""
+
+    def test_run_one_returns_not_applicable_when_tier_in_skip_tiers(self):
+        corpus_path = Path(__file__).parent / "corpus.jsonl"
+        corpus = load_corpus(corpus_path)
+        item = next((i for i in corpus if not i.should_skip), None)
+        assert item is not None
+        item.skip_tiers = ["fast"]
+        result = run_one(item, "fast")
+        assert result.available is False
+        assert "tier_not_applicable" in (result.error or "")
+
+    def test_run_one_proceeds_normally_when_tier_not_in_skip_tiers(self):
+        corpus_path = Path(__file__).parent / "corpus.jsonl"
+        corpus = load_corpus(corpus_path)
+        item = next((i for i in corpus if not i.should_skip), None)
+        assert item is not None
+        item.skip_tiers = []
+        result = run_one(item, "fast")
+        # May or may not be available depending on system enchant, but should not be not_applicable
+        assert not (result.error or "").startswith("tier_not_applicable")
+
+    def test_by_tier_excludes_not_applicable_from_n_items(self):
+        """tier_not_applicable rows should not inflate n_items in by_tier()."""
+        from runner import RunResult
+
+        def make_result(available, error, corrections, expected):
+            return RunResult(
+                item_id="x", tier="fast", input_type="general",
+                latency_ms=0.0, corrections=corrections, expected=expected,
+                error=error, available=available,
+            )
+
+        results = [
+            make_result(True, None, [], []),                               # ran fine
+            make_result(False, "tier_not_applicable: fast", [], [{"start": 0, "end": 4}]),  # skipped
+            make_result(False, "tier_not_applicable: fast", [], [{"start": 0, "end": 3}]),  # skipped
+        ]
+        metrics = by_tier(results)
+        assert metrics["fast"]["n_items"] == 1
+        assert metrics["fast"]["n_not_applicable"] == 2
+
+    def test_corpus_item_default_skip_tiers_is_empty(self):
+        item = CorpusItem(
+            id="x", input_type="general", text="hello",
+            expected_corrections=[], should_skip=False,
+        )
+        assert item.skip_tiers == []
+
+    def test_kaggle_gec_grammar_items_skip_fast_tier(self):
+        """Grammar-error kaggle items should have skip_tiers=["fast"]."""
+        from sources.kaggle_gec import load
+        items = list(load(sample=10, seed=42))
+        if not items:
+            pytest.skip("kaggle_gec CSV not present")
+        # All items from kaggle should skip fast tier unless explicitly spelling errors
+        for item in items:
+            assert "fast" in item.skip_tiers or item.error_type.lower() in {"spelling", "typo", "misspelling", "orthography"}
 
 
 class TestQualityGate:
