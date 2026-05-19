@@ -40,12 +40,13 @@ def test_is_available_no_ctranslate2():
     d = _make_model_dir()
     try:
         os.environ["CT2_MODEL_PATH"] = d
-        saved = sys.modules.pop("ctranslate2", None)
-        result = t5_backend.is_available()
+        # Setting sys.modules["ctranslate2"] = None forces ImportError regardless of
+        # whether the package is installed on the running Python — sys.modules.pop()
+        # alone is insufficient when the package is installed system-wide.
+        with patch.dict("sys.modules", {"ctranslate2": None}):
+            result = t5_backend.is_available()
         assert result is False
     finally:
-        if saved:
-            sys.modules["ctranslate2"] = saved
         os.environ.pop("CT2_MODEL_PATH", None)
         import shutil; shutil.rmtree(d)
 
@@ -57,13 +58,11 @@ def test_is_available_no_transformers():
     try:
         os.environ["CT2_MODEL_PATH"] = d
         mock_ct2 = MagicMock()
-        saved_tf = sys.modules.pop("transformers", None)
-        with patch.dict("sys.modules", {"ctranslate2": mock_ct2}):
+        # Set transformers to None to force ImportError even if installed system-wide.
+        with patch.dict("sys.modules", {"ctranslate2": mock_ct2, "transformers": None}):
             result = t5_backend.is_available()
         assert result is False
     finally:
-        if saved_tf:
-            sys.modules["transformers"] = saved_tf
         os.environ.pop("CT2_MODEL_PATH", None)
         import shutil; shutil.rmtree(d)
 
