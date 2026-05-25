@@ -1,3 +1,6 @@
+# Local environment — never commit (use .env.example as template)
+.env
+
 node_modules/
 dist/
 __pycache__/
@@ -12,3 +15,6 @@ web-ext-config.js
 models/
 *.bin
 *.onnx
+
+# Session logs and audit data (runtime, not source)
+waldospells_data/
