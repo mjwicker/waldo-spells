@@ -3,12 +3,32 @@
 import argparse
 import csv
 import math
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
 
-import os as _os, sys as _sys
-_sys.path.insert(0, _os.path.dirname(__file__))
+# Load .env into os.environ before importing backends that read env vars at import time
+def _load_dotenv(env_path: Path) -> None:
+    """Minimal .env loader — no external dependency required."""
+    if not env_path.is_file():
+        return
+    for line in env_path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip()
+        # Only set if not already present in environment (shell export wins)
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+_load_dotenv(Path(__file__).parent.parent / ".env")
+
+import sys as _sys
+_sys.path.insert(0, os.path.dirname(__file__))
 
 from corpus import load_corpus, load_sources
 from runner import run_all
