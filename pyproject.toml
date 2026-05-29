@@ -6,6 +6,7 @@ dependencies = [
     "ctranslate2>=4.7",
     "huggingface-hub>=1.12",
     "numpy>=2.0",
+    "onnxruntime>=1.26.0",
     "pyenchant>=3.3",
     "pyyaml>=6.0",
     "requests>=2.33",

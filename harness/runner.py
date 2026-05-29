@@ -14,11 +14,16 @@ import nuspell_backend
 import t5_backend
 import llama_backend
 
+# harness-level ONNX classification backend (edge tier)
+sys.path.insert(0, str(Path(__file__).parent))
+import onnx_backend
+
 
 TIER_BACKENDS = {
     "fast": nuspell_backend,
     "better": t5_backend,
     "smart": llama_backend,
+    "edge": onnx_backend,
 }
 
 
@@ -93,6 +98,11 @@ def run_one(item, tier: str) -> RunResult:
             error=f"tier_unavailable: {tier}", available=False,
         )
 
+    # Edge tier: ONNX classification backend — bypasses tier_router.
+    # Only handles tone tasks; all other tasks are not applicable.
+    if tier == "edge":
+        return _run_edge(item)
+
     # Run with context hint (normal path)
     request = Request(
         tier=tier,
@@ -138,8 +148,58 @@ def run_one(item, tier: str) -> RunResult:
     )
 
 
+def _run_edge(item) -> RunResult:
+    """Run a single corpus item against the ONNX edge tier.
+
+    The edge tier only handles tone tasks; span_correction items are marked
+    tier_not_applicable so they are excluded from metric aggregation.
+    """
+    import time
+
+    task = getattr(item, "task", "span_correction")
+
+    if task != "tone":
+        return RunResult(
+            item_id=item.id, tier="edge", input_type=item.input_type,
+            latency_ms=0.0, corrections=[], expected=item.expected_corrections,
+            task=task,
+            expected_label=getattr(item, "expected_label", None),
+            error_type=getattr(item, "error_type", None),
+            source=getattr(item, "source", None),
+            error="tier_not_applicable: edge (tone tasks only)",
+            available=False,
+        )
+
+    t0 = time.perf_counter()
+    try:
+        result = onnx_backend.classify_tone(item.text)
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+        return RunResult(
+            item_id=item.id, tier="edge", input_type=item.input_type,
+            latency_ms=elapsed_ms, corrections=[], expected=item.expected_corrections,
+            task=task,
+            expected_label=getattr(item, "expected_label", None),
+            error_type=getattr(item, "error_type", None),
+            source=getattr(item, "source", None),
+            predicted_label=result["label"],
+            available=True,
+        )
+    except Exception as exc:
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+        return RunResult(
+            item_id=item.id, tier="edge", input_type=item.input_type,
+            latency_ms=elapsed_ms, corrections=[], expected=item.expected_corrections,
+            task=task,
+            expected_label=getattr(item, "expected_label", None),
+            error_type=getattr(item, "error_type", None),
+            source=getattr(item, "source", None),
+            error=f"backend_error: {type(exc).__name__}: {exc}",
+            available=False,
+        )
+
+
 def run_all(
-    corpus: List, tiers: Tuple[str, ...] = ("fast", "better", "smart")
+    corpus: List, tiers: Tuple[str, ...] = ("fast", "better", "smart", "edge")
 ) -> List[RunResult]:
     """Run all corpus items against specified tiers."""
     results = []
