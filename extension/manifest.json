@@ -1,10 +1,14 @@
 {
   "manifest_version": 3,
   "name": "Waldo Spells",
-  "version": "0.2.0",
+  "version": "0.4.0",
   "description": "Context-aware local spelling and word-choice checker. Runs entirely on your machine.",
   "permissions": ["storage"],
-  "host_permissions": ["http://127.0.0.1:8765/*"],
+  "host_permissions": [
+    "http://127.0.0.1:8765/*",
+    "https://huggingface.co/*",
+    "https://cdn.jsdelivr.net/*"
+  ],
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
@@ -13,12 +17,19 @@
     }
   ],
   "background": {
-    "scripts": ["background.js"]
+    "scripts": ["background.js"],
+    "type": "module"
   },
   "action": {
     "default_popup": "popup.html",
     "default_icon": {
       "48": "icons/icon48.svg"
     }
-  }
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["vendor/*"],
+      "matches": ["<all_urls>"]
+    }
+  ]
 }

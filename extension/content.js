@@ -1,11 +1,55 @@
 (() => {
-  const DEBOUNCE_MS = 600;
+  const DEBOUNCE_MS      = 600;
+  const EDGE_DEBOUNCE_MS = 1200; // longer — model load can be slow on first call
 
   // WeakMap keeps tooltip refs without preventing GC of removed inputs
-  const tooltipMap = new WeakMap();
-  let debounceTimer = null;
+  const tooltipMap      = new WeakMap();
+  const edgeOverlayMap  = new WeakMap(); // sentence underline overlays
+  let debounceTimer     = null;
+  let edgeDebounceTimer = null;
 
-  // ── Context detection (per research/context_detection.md) ────────────────
+  // ── Injected stylesheet for Edge tier underlines ──────────────────────────
+
+  (function injectEdgeStyles() {
+    if (document.getElementById("waldo-edge-styles")) return;
+    const style = document.createElement("style");
+    style.id = "waldo-edge-styles";
+    // .waldo-edge-flag: orange wavy underline — distinct from browser spell-check
+    // (which uses red) and Grammarly (blue).  Inline-block keeps it positioned
+    // relative to the text span rather than the containing block.
+    style.textContent = `
+      .waldo-edge-flag {
+        text-decoration: underline wavy #f97316;
+        text-decoration-thickness: 2px;
+        text-underline-offset: 3px;
+        cursor: help;
+        position: relative;
+      }
+      .waldo-edge-flag::after {
+        content: attr(data-waldo-reason);
+        display: none;
+        position: absolute;
+        left: 0;
+        top: 100%;
+        margin-top: 4px;
+        background: #1a1a2e;
+        color: #fed7aa;
+        border: 1px solid #f97316;
+        border-radius: 5px;
+        padding: 5px 10px;
+        font: 12px/1.4 system-ui, sans-serif;
+        white-space: nowrap;
+        z-index: 2147483647;
+        pointer-events: none;
+      }
+      .waldo-edge-flag:hover::after {
+        display: block;
+      }
+    `;
+    document.head.appendChild(style);
+  })();
+
+  // ── Context detection (per research/context_detection.md) ─────────────────
 
   function shouldSkip(el) {
     if (el.type === "password") return true;
@@ -26,7 +70,7 @@
     return "general";
   }
 
-  // ── Tooltip overlay ───────────────────────────────────────────────────────
+  // ── Tooltip overlay (fast tier) ───────────────────────────────────────────
 
   function removeTooltip(el) {
     const tip = tooltipMap.get(el);
@@ -76,6 +120,103 @@
     tip.style.left = `${Math.max(0, tipLeft)}px`;
   }
 
+  // ── Edge tier underline overlay ───────────────────────────────────────────
+  //
+  // For plain <textarea>/<input> elements we cannot wrap individual words/sentences
+  // with HTML spans — the content is plain text. Instead we render an overlay
+  // <div> that mirrors the textarea geometry and contains reconstructed text with
+  // flagged sentences wrapped in <span class="waldo-edge-flag">.
+  //
+  // The overlay sits beneath the textarea (z-index lower) with pointer-events:none
+  // so it doesn't interfere with typing. Wavy underlines from the spans show
+  // through the (transparent-background) textarea.
+  //
+  // Limitation: only works when the textarea uses a standard monospace or system
+  // font. Custom webfonts may cause slight misalignment. This is acceptable for
+  // the v0.4.0 Edge tier milestone.
+
+  function removeEdgeOverlay(el) {
+    const overlay = edgeOverlayMap.get(el);
+    if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
+    edgeOverlayMap.delete(el);
+  }
+
+  function buildOverlayText(text, flaggedSentences) {
+    if (!flaggedSentences.length) return document.createTextNode(text);
+
+    const fragment = document.createDocumentFragment();
+    let cursor = 0;
+
+    for (const { sentence, score } of flaggedSentences) {
+      const idx = text.indexOf(sentence, cursor);
+      if (idx === -1) continue;
+
+      // Plain text before this sentence
+      if (idx > cursor) {
+        fragment.appendChild(document.createTextNode(text.slice(cursor, idx)));
+      }
+
+      // Flagged sentence span
+      const span = document.createElement("span");
+      span.className = "waldo-edge-flag";
+      const pct = Math.round(score * 100);
+      span.setAttribute("data-waldo-reason", `Negative tone (${pct}% confidence)`);
+      span.textContent = sentence;
+      fragment.appendChild(span);
+
+      cursor = idx + sentence.length;
+    }
+
+    // Remaining text
+    if (cursor < text.length) {
+      fragment.appendChild(document.createTextNode(text.slice(cursor)));
+    }
+
+    return fragment;
+  }
+
+  function syncOverlay(el, flaggedSentences) {
+    removeEdgeOverlay(el);
+    if (!flaggedSentences.length) return;
+
+    const text = el.value ?? el.innerText ?? "";
+    if (!text.trim()) return;
+
+    // Compute computed style once to mirror the textarea faithfully
+    const cs = window.getComputedStyle(el);
+    const rect = el.getBoundingClientRect();
+    const scrollTop  = window.scrollY || document.documentElement.scrollTop;
+    const scrollLeft = window.scrollX || document.documentElement.scrollLeft;
+
+    const overlay = document.createElement("div");
+    overlay.setAttribute("data-waldo-edge-overlay", "1");
+    overlay.style.cssText = [
+      `position:absolute`,
+      `top:${rect.top + scrollTop}px`,
+      `left:${rect.left + scrollLeft}px`,
+      `width:${rect.width}px`,
+      `height:${rect.height}px`,
+      `padding:${cs.padding}`,
+      `border:${cs.border}`,
+      `font:${cs.font}`,
+      `line-height:${cs.lineHeight}`,
+      `letter-spacing:${cs.letterSpacing}`,
+      `word-spacing:${cs.wordSpacing}`,
+      `white-space:pre-wrap`,
+      `overflow:hidden`,
+      `background:transparent`,
+      // Render behind the textarea so the overlay underlines show through
+      `z-index:${parseInt(cs.zIndex || "0", 10) - 1}`,
+      `pointer-events:none`,
+      `box-sizing:${cs.boxSizing}`,
+      `color:transparent`,     // hide text — only underline decorations visible
+    ].join(";");
+
+    overlay.appendChild(buildOverlayText(text, flaggedSentences));
+    document.body.appendChild(overlay);
+    edgeOverlayMap.set(el, overlay);
+  }
+
   // ── Analysis ──────────────────────────────────────────────────────────────
 
   async function analyze(el) {
@@ -97,22 +238,47 @@
     }
   }
 
+  async function analyzeEdge(el) {
+    if (shouldSkip(el)) return;
+    const text = el.value ?? el.innerText ?? "";
+    if (!text.trim()) { removeEdgeOverlay(el); return; }
+
+    try {
+      const resp = await browser.runtime.sendMessage({
+        action: "edge_analyze",
+        text,
+      });
+      if (resp && Array.isArray(resp.sentences)) {
+        syncOverlay(el, resp.sentences);
+      }
+    } catch (_) {
+      // Edge worker unavailable — silent fail, degraded gracefully
+    }
+  }
+
   // ── Event handlers ────────────────────────────────────────────────────────
 
   function onInput(e) {
     clearTimeout(debounceTimer);
+    clearTimeout(edgeDebounceTimer);
     removeTooltip(e.target);
-    debounceTimer = setTimeout(() => analyze(e.target), DEBOUNCE_MS);
+    removeEdgeOverlay(e.target);
+
+    debounceTimer     = setTimeout(() => analyze(e.target), DEBOUNCE_MS);
+    edgeDebounceTimer = setTimeout(() => analyzeEdge(e.target), EDGE_DEBOUNCE_MS);
   }
 
   function onBlur(e) {
     // Analyze immediately on blur (no debounce — user has finished typing)
     clearTimeout(debounceTimer);
+    clearTimeout(edgeDebounceTimer);
     analyze(e.target);
+    analyzeEdge(e.target);
   }
 
   function onFocus(e) {
     removeTooltip(e.target);
+    removeEdgeOverlay(e.target);
   }
 
   // ── Attachment ────────────────────────────────────────────────────────────
