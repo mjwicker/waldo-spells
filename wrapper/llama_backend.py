@@ -19,6 +19,7 @@ import atexit
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -127,10 +128,89 @@ def _stop_server() -> None:
 
 _SYSTEM_PROMPT = """\
 You are a grammar correction tool. Identify grammatical errors in the text.
-Return ONLY a JSON object — no prose, no markdown, no extra fields:
+Return ONLY a valid JSON object — no prose, no markdown, no extra fields.
+
+Output format (follow this exactly, including bracket and brace order):
 {"corrections": [{"original": "wrong word or phrase", "suggestion": "corrected form"}]}
-If there are no errors, return: {"corrections": []}
-Preserve the author's meaning. Do not paraphrase or rewrite. Flag only clear errors."""
+
+Example with one correction:
+Input: "I should of gone earlier."
+Output: {"corrections": [{"original": "of", "suggestion": "have"}]}
+
+Example with no errors:
+Input: "She went to the store."
+Output: {"corrections": []}
+
+Rules:
+- Each item in the array must be closed with } before the next , or ]
+- The array must be closed with ] before the outer }
+- Preserve the author's meaning. Do not paraphrase or rewrite. Flag only clear errors."""
+
+
+def _parse_json_with_repair(raw: str) -> dict:
+    """Parse JSON from model output, applying bracket/brace repair if needed.
+
+    Qwen2.5-3B reliably emits `}}]` instead of `}]` — one extra closing brace
+    per array object, before the closing bracket.  Apply targeted repairs before
+    raising so the harness sees corrections instead of parse errors.
+
+    Repair passes (applied in order until one succeeds):
+      1. Direct parse — no repair needed.
+      2. Replace `}}]` with `}]` (extra closing brace before array close).
+      3. Replace `}]` with `}]}` (missing outer closing brace — truncated output).
+      4. Strip trailing non-JSON characters and retry.
+    """
+    # Pass 1: try raw parse first
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+
+    # Pass 2: replace `}}+]` → `}]`  (one or more extra closing braces before array close)
+    repaired = re.sub(r"\}(\}+)\]", "}]", raw)
+    try:
+        result = json.loads(repaired)
+        logger.debug("[llama_backend] JSON repaired via pass 2 (}}] → }])")
+        return result
+    except json.JSONDecodeError:
+        pass
+
+    # Pass 3: missing `]` — model emits `}}}` instead of `}]}`.
+    # Pattern: last array item ends with `}}+` without a `]` before outer close.
+    repaired3 = re.sub(r"\}(\}+)$", "}]}", repaired.rstrip())
+    try:
+        result = json.loads(repaired3)
+        logger.debug("[llama_backend] JSON repaired via pass 3 (}}+ → }]})")
+        return result
+    except json.JSONDecodeError:
+        pass
+
+    # Pass 4: truncated — missing closing `}` after array; append it
+    repaired4 = repaired.rstrip()
+    if repaired4.endswith("]"):
+        candidate = repaired4 + "}"
+        try:
+            result = json.loads(candidate)
+            logger.debug("[llama_backend] JSON repaired via pass 4 (appended outer })")
+            return result
+        except json.JSONDecodeError:
+            pass
+
+    # Pass 5: strip junk after the last valid `}` and retry
+    last_brace = raw.rfind("}")
+    if last_brace != -1:
+        candidate = raw[: last_brace + 1]
+        # Apply pass-2 repair on truncated string too
+        candidate = re.sub(r"\}(\}+)\]", "}]", candidate)
+        try:
+            result = json.loads(candidate)
+            logger.debug("[llama_backend] JSON repaired via pass 5 (truncated at last })")
+            return result
+        except json.JSONDecodeError:
+            pass
+
+    # All passes failed — let the caller handle it
+    raise json.JSONDecodeError("All repair passes failed", raw, 0)
 
 
 def correct(text: str, context_hint: Optional[str] = None) -> List[Correction]:
@@ -186,7 +266,7 @@ def correct(text: str, context_hint: Optional[str] = None) -> List[Correction]:
     try:
         body = resp.json()
         raw = body["choices"][0]["message"]["content"]
-        data = json.loads(raw)
+        data = _parse_json_with_repair(raw)
     except (KeyError, IndexError, json.JSONDecodeError, ValueError) as e:
         logger.error("Failed to parse llama-server response: %s — raw: %.200s", e, resp.text)
         return []

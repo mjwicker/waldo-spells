@@ -63,3 +63,102 @@ def test_is_available_returns_bool():
     _clear_env()
     result = llama_backend.is_available()
     assert isinstance(result, bool)
+
+
+# Tests for _parse_json_with_repair
+
+def test_parse_json_with_repair_valid_json_passes_through():
+    """Valid JSON should parse without modification."""
+    valid = '{"corrections": [{"original": "foo", "suggestion": "bar"}]}'
+    result = llama_backend._parse_json_with_repair(valid)
+    assert result == {"corrections": [{"original": "foo", "suggestion": "bar"}]}
+
+
+def test_parse_json_with_repair_empty_corrections():
+    """Valid JSON with empty corrections array should parse."""
+    valid = '{"corrections": []}'
+    result = llama_backend._parse_json_with_repair(valid)
+    assert result == {"corrections": []}
+
+
+def test_parse_json_with_repair_pass2_double_brace_before_bracket():
+    """Pass 2: Replace }}] → }] (extra closing brace before array close)."""
+    # Single item with extra closing brace
+    malformed = '{"corrections": [{"original": "of", "suggestion": "have"}]}]'
+    result = llama_backend._parse_json_with_repair(malformed)
+    assert result == {"corrections": [{"original": "of", "suggestion": "have"}]}
+
+
+def test_parse_json_with_repair_pass2_multiple_extra_braces():
+    """Pass 2: Replace }}}] → }] (multiple extra closing braces before bracket)."""
+    # This case has extra braces before the array closing bracket
+    malformed = '{"corrections": [{"original": "foo", "suggestion": "bar"}}]'
+    result = llama_backend._parse_json_with_repair(malformed)
+    assert result == {"corrections": [{"original": "foo", "suggestion": "bar"}]}
+
+
+def test_parse_json_with_repair_pass2_multiple_items_with_extra_braces():
+    """Pass 2: Handle multiple items in array, each with extra brace."""
+    # Model generates array with }}] pattern at the very end
+    malformed = '{"corrections": [{"original": "a", "suggestion": "b"}, {"original": "c", "suggestion": "d"}]}]'
+    result = llama_backend._parse_json_with_repair(malformed)
+    # After pass 2 repair: }}] → }], this becomes valid
+    assert len(result["corrections"]) == 2
+    assert result["corrections"][0] == {"original": "a", "suggestion": "b"}
+    assert result["corrections"][1] == {"original": "c", "suggestion": "d"}
+
+
+def test_parse_json_with_repair_pass3_missing_array_close():
+    """Pass 3: Replace }}} (or more) at end → }]} (missing array close bracket)."""
+    # Model emits }} at end (no closing bracket for array)
+    malformed = '{"corrections": [{"original": "test", "suggestion": "check"}]}'
+    # Simulate truncation: missing ] before final }
+    malformed = '{"corrections": [{"original": "test", "suggestion": "check"}}'
+    result = llama_backend._parse_json_with_repair(malformed)
+    assert result == {"corrections": [{"original": "test", "suggestion": "check"}]}
+
+
+def test_parse_json_with_repair_pass4_truncated_missing_outer_brace():
+    """Pass 4: Truncated output ending in ] — append final }."""
+    # Missing outer closing brace
+    malformed = '{"corrections": [{"original": "foo", "suggestion": "bar"}]'
+    result = llama_backend._parse_json_with_repair(malformed)
+    assert result == {"corrections": [{"original": "foo", "suggestion": "bar"}]}
+
+
+def test_parse_json_with_repair_pass5_junk_after_last_brace():
+    """Pass 5: Strip junk after the last } and retry."""
+    malformed = '{"corrections": [{"original": "test", "suggestion": "pass"}]} garbage data here'
+    result = llama_backend._parse_json_with_repair(malformed)
+    assert result == {"corrections": [{"original": "test", "suggestion": "pass"}]}
+
+
+def test_parse_json_with_repair_all_passes_fail_raises():
+    """When all repair passes fail, JSONDecodeError is raised."""
+    import json
+    completely_malformed = '{{[[['
+    try:
+        llama_backend._parse_json_with_repair(completely_malformed)
+        assert False, "Should have raised json.JSONDecodeError"
+    except json.JSONDecodeError:
+        pass
+
+
+def test_parse_json_with_repair_empty_string_raises():
+    """Empty string should raise JSONDecodeError."""
+    import json
+    try:
+        llama_backend._parse_json_with_repair('')
+        assert False, "Should have raised json.JSONDecodeError"
+    except json.JSONDecodeError:
+        pass
+
+
+def test_parse_json_with_repair_complex_multi_item_array():
+    """Complex case: multiple corrections with real-world malformation pattern."""
+    # Real pattern from Qwen: }}] at the end
+    malformed = '{"corrections": [{"original": "soooooo", "suggestion": "so"}, {"original": "teh", "suggestion": "the"}]}]'
+    result = llama_backend._parse_json_with_repair(malformed)
+    # This tests the regex repair on more complex structures
+    assert "corrections" in result
+    assert len(result["corrections"]) == 2
