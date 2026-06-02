@@ -1,10 +1,18 @@
-// edge_worker.js — Edge tier inference using Transformers.js v4 + DistilBERT ONNX
+// edge_worker.js — Edge tier inference using Transformers.js v4 + BERT-CoLA ONNX
 //
 // Loaded as an ES module from background.js via dynamic import.
-// Classifies text sentiment (POSITIVE / NEGATIVE) using
-// Xenova/distilbert-base-uncased-finetuned-sst-2-english (INT8 ONNX).
-// The model is ~65 MB; Transformers.js fetches and caches it in the browser
+// Classifies grammatical acceptability (ACCEPTABLE / UNACCEPTABLE) using
+// textattack/bert-base-uncased-CoLA (INT8 ONNX).
+// The model is ~100 MB; Transformers.js fetches and caches it in the browser
 // Cache API on first use — no network required after initial download.
+//
+// Model fix (T-SPELLS-EDGE-3):
+//   The previous model (Xenova/distilbert-base-uncased-finetuned-sst-2-english)
+//   was a 2-class sentiment classifier, not a grammar detector.  It produced
+//   near-random output (F1 = 0.005) on grammar corpora because POSITIVE/NEGATIVE
+//   sentiment has no correlation with grammatical acceptability.
+//   Replaced with textattack/bert-base-uncased-CoLA which is fine-tuned on the
+//   Corpus of Linguistic Acceptability (CoLA) and outputs ACCEPTABLE/UNACCEPTABLE.
 //
 // Architecture: zero-dependency on the local server (port 8765).
 // This tier runs entirely inside the extension process.
@@ -30,7 +38,14 @@ env.useBrowserCache  = true;
 
 // ── Singleton pipeline ────────────────────────────────────────────────────────
 
-const MODEL_ID = "Xenova/distilbert-base-uncased-finetuned-sst-2-english";
+// CoLA-trained grammar acceptability model.
+// Labels: ACCEPTABLE (sentence is grammatically well-formed) /
+//         UNACCEPTABLE (sentence has a grammar error).
+// Source: textattack/bert-base-uncased-CoLA on HuggingFace.
+// Note: Transformers.js will load the ONNX weights from the HuggingFace Hub.
+// The model is fine-tuned on CoLA (Corpus of Linguistic Acceptability),
+// eval_mcc ≈ 0.534 on the CoLA dev set.
+const MODEL_ID = "textattack/bert-base-uncased-CoLA";
 
 let _pipe    = null;   // pipeline instance once loaded
 let _loading = false;  // guard against concurrent init
@@ -91,8 +106,15 @@ function splitSentences(text) {
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /**
- * Classify each sentence in `text`.
- * Returns an array of objects describing any flagged sentences.
+ * Classify each sentence in `text` for grammatical acceptability.
+ * Returns an array of objects describing any grammatically unacceptable sentences.
+ *
+ * Labels from the CoLA model:
+ *   ACCEPTABLE   — sentence is grammatically well-formed
+ *   UNACCEPTABLE — sentence contains a grammar error
+ *
+ * Only sentences classified as UNACCEPTABLE with score ≥ 0.65 are returned.
+ * Callers (e.g. content.js) render these as inline grammar error highlights.
  *
  * @param {string} text
  * @returns {Promise<Array<{sentence: string, label: string, score: number}>>}
@@ -114,17 +136,19 @@ export async function analyzeEdge(text) {
       const top = Array.isArray(result) ? result[0] : result;
       return {
         sentence : sentences[i],
-        label    : top.label,  // "POSITIVE" or "NEGATIVE"
+        label    : top.label,  // "ACCEPTABLE" or "UNACCEPTABLE"
         score    : top.score,
       };
     })
-    // Surface NEGATIVE sentences only — callers decide how to render them.
-    .filter((r) => r.label === "NEGATIVE" && r.score >= 0.7);
+    // Surface UNACCEPTABLE sentences only — these are the grammar errors.
+    // Threshold 0.65: lower than the old 0.70 to improve recall for short sentences.
+    .filter((r) => r.label === "UNACCEPTABLE" && r.score >= 0.65);
 }
 
 /**
- * Warm up the pipeline in the background.
+ * Warm up the CoLA grammar pipeline in the background.
  * Called once at service-worker startup so the first user request is fast.
+ * The CoLA model (~100 MB) is downloaded and cached by the browser on first use.
  */
 export function warmUp() {
   getPipeline().catch(() => {

@@ -151,51 +151,100 @@ def run_one(item, tier: str) -> RunResult:
 def _run_edge(item) -> RunResult:
     """Run a single corpus item against the ONNX edge tier.
 
-    The edge tier only handles tone tasks; span_correction items are marked
-    tier_not_applicable so they are excluded from metric aggregation.
+    Supported tasks:
+      - "grammar"  — CoLA model (textattack/bert-base-uncased-CoLA, INT8 ONNX).
+                     Labels: "acceptable" (no grammar error) / "unacceptable" (has error).
+                     Primary path for grammar detection.  Requires cola_available().
+      - "tone"     — DistilBERT SST-2 (sentiment).
+                     Labels: "positive" / "negative".
+                     Retained for sentiment/tone-only corpus items.
+
+    All other task types (e.g. span_correction) are marked tier_not_applicable.
     """
     import time
 
     task = getattr(item, "task", "span_correction")
 
-    if task != "tone":
-        return RunResult(
-            item_id=item.id, tier="edge", input_type=item.input_type,
-            latency_ms=0.0, corrections=[], expected=item.expected_corrections,
-            task=task,
-            expected_label=getattr(item, "expected_label", None),
-            error_type=getattr(item, "error_type", None),
-            source=getattr(item, "source", None),
-            error="tier_not_applicable: edge (tone tasks only)",
-            available=False,
-        )
+    # ── Grammar detection (CoLA model) ────────────────────────────────────────
+    if task == "grammar":
+        if not onnx_backend.cola_available():
+            return RunResult(
+                item_id=item.id, tier="edge", input_type=item.input_type,
+                latency_ms=0.0, corrections=[], expected=item.expected_corrections,
+                task=task,
+                expected_label=getattr(item, "expected_label", None),
+                error_type=getattr(item, "error_type", None),
+                source=getattr(item, "source", None),
+                error="tier_unavailable: CoLA model missing — run scripts/export_cola_onnx.py",
+                available=False,
+            )
+        t0 = time.perf_counter()
+        try:
+            result = onnx_backend.classify_grammar(item.text)
+            elapsed_ms = (time.perf_counter() - t0) * 1000.0
+            return RunResult(
+                item_id=item.id, tier="edge", input_type=item.input_type,
+                latency_ms=elapsed_ms, corrections=[], expected=item.expected_corrections,
+                task=task,
+                expected_label=getattr(item, "expected_label", None),
+                error_type=getattr(item, "error_type", None),
+                source=getattr(item, "source", None),
+                predicted_label=result["label"],
+                available=True,
+            )
+        except Exception as exc:
+            elapsed_ms = (time.perf_counter() - t0) * 1000.0
+            return RunResult(
+                item_id=item.id, tier="edge", input_type=item.input_type,
+                latency_ms=elapsed_ms, corrections=[], expected=item.expected_corrections,
+                task=task,
+                expected_label=getattr(item, "expected_label", None),
+                error_type=getattr(item, "error_type", None),
+                source=getattr(item, "source", None),
+                error=f"backend_error: {type(exc).__name__}: {exc}",
+                available=False,
+            )
 
-    t0 = time.perf_counter()
-    try:
-        result = onnx_backend.classify_tone(item.text)
-        elapsed_ms = (time.perf_counter() - t0) * 1000.0
-        return RunResult(
-            item_id=item.id, tier="edge", input_type=item.input_type,
-            latency_ms=elapsed_ms, corrections=[], expected=item.expected_corrections,
-            task=task,
-            expected_label=getattr(item, "expected_label", None),
-            error_type=getattr(item, "error_type", None),
-            source=getattr(item, "source", None),
-            predicted_label=result["label"],
-            available=True,
-        )
-    except Exception as exc:
-        elapsed_ms = (time.perf_counter() - t0) * 1000.0
-        return RunResult(
-            item_id=item.id, tier="edge", input_type=item.input_type,
-            latency_ms=elapsed_ms, corrections=[], expected=item.expected_corrections,
-            task=task,
-            expected_label=getattr(item, "expected_label", None),
-            error_type=getattr(item, "error_type", None),
-            source=getattr(item, "source", None),
-            error=f"backend_error: {type(exc).__name__}: {exc}",
-            available=False,
-        )
+    # ── Tone/sentiment (SST-2 model) ─────────────────────────────────────────
+    if task == "tone":
+        t0 = time.perf_counter()
+        try:
+            result = onnx_backend.classify_tone(item.text)
+            elapsed_ms = (time.perf_counter() - t0) * 1000.0
+            return RunResult(
+                item_id=item.id, tier="edge", input_type=item.input_type,
+                latency_ms=elapsed_ms, corrections=[], expected=item.expected_corrections,
+                task=task,
+                expected_label=getattr(item, "expected_label", None),
+                error_type=getattr(item, "error_type", None),
+                source=getattr(item, "source", None),
+                predicted_label=result["label"],
+                available=True,
+            )
+        except Exception as exc:
+            elapsed_ms = (time.perf_counter() - t0) * 1000.0
+            return RunResult(
+                item_id=item.id, tier="edge", input_type=item.input_type,
+                latency_ms=elapsed_ms, corrections=[], expected=item.expected_corrections,
+                task=task,
+                expected_label=getattr(item, "expected_label", None),
+                error_type=getattr(item, "error_type", None),
+                source=getattr(item, "source", None),
+                error=f"backend_error: {type(exc).__name__}: {exc}",
+                available=False,
+            )
+
+    # ── All other tasks — not applicable to the edge tier ────────────────────
+    return RunResult(
+        item_id=item.id, tier="edge", input_type=item.input_type,
+        latency_ms=0.0, corrections=[], expected=item.expected_corrections,
+        task=task,
+        expected_label=getattr(item, "expected_label", None),
+        error_type=getattr(item, "error_type", None),
+        source=getattr(item, "source", None),
+        error=f"tier_not_applicable: edge (grammar and tone tasks only, got {task!r})",
+        available=False,
+    )
 
 
 def run_all(

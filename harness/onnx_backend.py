@@ -1,26 +1,38 @@
-"""Edge tier: ONNX classification runner for tone/sentiment.
+"""Edge tier: ONNX classification runner for grammar acceptability and tone.
 
-Two bundled models (both sourced from Xenova/ on HuggingFace, INT8 quantised):
+Three bundled models:
+
+  bert-cola        — BERT fine-tuned on CoLA (Corpus of Linguistic Acceptability).
+                     Outputs logits for UNACCEPTABLE (0) / ACCEPTABLE (1).
+                     Primary grammar-detection model for the fast/edge tier.
+                     Export with: python scripts/export_cola_onnx.py
+                     Lives at: models/bert-cola-onnx/model_int8.onnx
 
   distilbert-sst2  — DistilBERT fine-tuned on SST-2; outputs logits for
                      NEGATIVE (0) / POSITIVE (1). ~66 MB on disk.
-                     This is the primary classification model.
+                     Retained for tone/sentiment tasks only.
+                     Lives at: models/distilbert-sst2-onnx/model_int8.onnx
 
   all-MiniLM-L6-v2 — Sentence embeddings (384-dim). Used for similarity
                      scoring; no built-in classification head.
-
-Both live under models/ relative to the repo root:
-  models/distilbert-sst2-onnx/model_int8.onnx
-  models/all-MiniLM-L6-v2-onnx/model_int8.onnx
+                     Lives at: models/all-MiniLM-L6-v2-onnx/model_int8.onnx
 
 Environment variables (optional overrides):
+  ONNX_COLA_PATH         — absolute path to bert-cola model_int8.onnx
   ONNX_DISTILBERT_PATH   — absolute path to distilbert model_int8.onnx
   ONNX_MINILM_PATH       — absolute path to all-MiniLM model_int8.onnx
 
 Setup (one-time):
   uv add onnxruntime
+  python scripts/export_cola_onnx.py   # requires optimum + torch
 
 Latency target (Pentium N6000, CPU INT8): ≤ 200 ms per sentence.
+
+Model fix (T-SPELLS-EDGE-3):
+  The original edge tier used DistilBERT SST-2 for grammar detection, producing
+  near-random output (F1 = 0.005, precision 1.2%, recall 0.3%) because SST-2 is
+  a sentiment model with no grammar signal. Replaced with textattack/bert-base-uncased-CoLA
+  (eval_mcc ≈ 0.534), a model explicitly trained to judge grammatical acceptability.
 """
 
 import json
@@ -36,28 +48,50 @@ logger = logging.getLogger(__name__)
 _REPO_ROOT = Path(__file__).parent.parent
 _MODELS_DIR = _REPO_ROOT / "models"
 
-_DISTILBERT_DEFAULT = _MODELS_DIR / "distilbert-sst2-onnx" / "model_int8.onnx"
-_MINILM_DEFAULT = _MODELS_DIR / "all-MiniLM-L6-v2-onnx" / "model_int8.onnx"
+# CoLA (grammatical acceptability) — primary grammar detection model
+_COLA_DEFAULT = _MODELS_DIR / "bert-cola-onnx" / "model_int8.onnx"
+_COLA_TOKENIZER_DIR = _COLA_DEFAULT.parent
 
-# Tokenizer JSON lives beside the model
+# SST-2 (sentiment) — retained for tone tasks only
+_DISTILBERT_DEFAULT = _MODELS_DIR / "distilbert-sst2-onnx" / "model_int8.onnx"
 _DISTILBERT_TOKENIZER_DIR = _DISTILBERT_DEFAULT.parent
+
+# Sentence embeddings (similarity scoring)
+_MINILM_DEFAULT = _MODELS_DIR / "all-MiniLM-L6-v2-onnx" / "model_int8.onnx"
 _MINILM_TOKENIZER_DIR = _MINILM_DEFAULT.parent
 
 # ── Lazy singletons ───────────────────────────────────────────────────────────
 
+_cola_session = None
+_cola_tokenizer = None
 _distilbert_session = None
 _distilbert_tokenizer = None
 _minilm_session = None
 _minilm_tokenizer = None
 
 
-# ── Label mapping ─────────────────────────────────────────────────────────────
+# ── Label mappings ────────────────────────────────────────────────────────────
+
+# CoLA (textattack/bert-base-uncased-CoLA): index 0 → UNACCEPTABLE, index 1 → ACCEPTABLE
+# A sentence is "unacceptable" when it contains a grammar error.
+_COLA_LABELS: Dict[int, str] = {0: "unacceptable", 1: "acceptable"}
 
 # DistilBERT SST-2: index 0 → NEGATIVE, index 1 → POSITIVE
 _DISTILBERT_LABELS: Dict[int, str] = {0: "negative", 1: "positive"}
 
 
 # ── Availability ─────────────────────────────────────────────────────────────
+
+
+def _cola_model_path() -> Optional[Path]:
+    env = os.environ.get("ONNX_COLA_PATH")
+    if env:
+        p = Path(env)
+        if p.is_file():
+            return p
+    if _COLA_DEFAULT.is_file():
+        return _COLA_DEFAULT
+    return None
 
 
 def _distilbert_model_path() -> Optional[Path]:
@@ -82,19 +116,47 @@ def _minilm_model_path() -> Optional[Path]:
     return None
 
 
+def cola_available() -> bool:
+    """True when onnxruntime is importable and the CoLA grammar model file exists.
+
+    The CoLA model (textattack/bert-base-uncased-CoLA, exported to ONNX INT8) is
+    the primary grammar-detection model for the edge tier.  Run
+    `python scripts/export_cola_onnx.py` to generate it.
+    """
+    try:
+        import onnxruntime  # noqa: F401
+    except ImportError:
+        return False
+    return _cola_model_path() is not None
+
+
 def is_available() -> bool:
-    """True when onnxruntime is importable and at least the DistilBERT model file exists."""
+    """True when onnxruntime is importable and at least one classification model exists.
+
+    Prefers the CoLA grammar model; falls back to DistilBERT SST-2 for tone tasks.
+    Use `cola_available()` to check specifically for the grammar model.
+    """
     try:
         import onnxruntime  # noqa: F401
     except ImportError:
         logger.debug("[onnx_backend] onnxruntime not installed")
         return False
-    if not _distilbert_model_path():
+    if _cola_model_path():
+        return True
+    if _distilbert_model_path():
         logger.debug(
-            "[onnx_backend] distilbert model not found at %s", _DISTILBERT_DEFAULT
+            "[onnx_backend] CoLA model not found at %s — falling back to SST-2 "
+            "(tone tasks only; grammar detection will be inaccurate). "
+            "Run: python scripts/export_cola_onnx.py",
+            _COLA_DEFAULT,
         )
-        return False
-    return True
+        return True
+    logger.debug(
+        "[onnx_backend] no classification model found (checked %s and %s)",
+        _COLA_DEFAULT,
+        _DISTILBERT_DEFAULT,
+    )
+    return False
 
 
 def minilm_available() -> bool:
@@ -183,6 +245,27 @@ class _WordPieceTokenizer:
 
 
 # ── Lazy loaders ──────────────────────────────────────────────────────────────
+
+
+def _load_cola() -> Tuple[object, _WordPieceTokenizer]:
+    """Load the CoLA ONNX grammar model (bert-cola-onnx)."""
+    global _cola_session, _cola_tokenizer
+    if _cola_session is None:
+        import onnxruntime as ort
+
+        model_path = _cola_model_path()
+        if model_path is None:
+            raise RuntimeError(
+                "[onnx_backend] CoLA model not found. "
+                "Run: python scripts/export_cola_onnx.py"
+            )
+        logger.info("[onnx_backend] loading CoLA grammar model from %s", model_path)
+        opts = ort.SessionOptions()
+        opts.inter_op_num_threads = 1
+        opts.intra_op_num_threads = 2
+        _cola_session = ort.InferenceSession(str(model_path), sess_options=opts)
+        _cola_tokenizer = _WordPieceTokenizer(_COLA_TOKENIZER_DIR)
+    return _cola_session, _cola_tokenizer
 
 
 def _load_distilbert() -> Tuple[object, _WordPieceTokenizer]:
@@ -275,6 +358,62 @@ def classify_tone(text: str, max_length: int = 128) -> Dict:
     }
 
 
+def classify_grammar(text: str, max_length: int = 128) -> Dict:
+    """
+    Run the CoLA grammar model on *text* and return a classification dict:
+
+      {
+        "label": "acceptable" | "unacceptable",
+        "score": float,          # confidence of winning class [0, 1]
+        "scores": {"acceptable": float, "unacceptable": float},
+        "model": str,            # model identifier for logging
+      }
+
+    "unacceptable" means the sentence is grammatically incorrect.
+    "acceptable" means the sentence is grammatically well-formed.
+
+    Model: textattack/bert-base-uncased-CoLA (CoLA fine-tune, eval_mcc ≈ 0.534).
+    Run `python scripts/export_cola_onnx.py` to generate the ONNX weights.
+
+    Raises RuntimeError if cola_available() is False.
+    """
+    if not cola_available():
+        raise RuntimeError(
+            "[onnx_backend] CoLA grammar model unavailable. "
+            "Run: python scripts/export_cola_onnx.py"
+        )
+
+    import numpy as np
+
+    session, tokenizer = _load_cola()
+    input_ids, attention_mask = tokenizer.encode(text, max_length=max_length)
+
+    # BERT-based models need token_type_ids (all zeros for single-sequence input)
+    token_type_ids = [0] * len(input_ids)
+
+    feed = {
+        "input_ids": np.array([input_ids], dtype=np.int64),
+        "attention_mask": np.array([attention_mask], dtype=np.int64),
+        "token_type_ids": np.array([token_type_ids], dtype=np.int64),
+    }
+    (logits_out,) = session.run(["logits"], feed)
+    logits = logits_out[0].tolist()  # shape [2]
+
+    probs = _numpy_softmax(logits)
+    pred_idx = int(probs.index(max(probs)))
+    label = _COLA_LABELS[pred_idx]
+
+    return {
+        "label": label,
+        "score": probs[pred_idx],
+        "scores": {
+            "unacceptable": probs[0],
+            "acceptable": probs[1],
+        },
+        "model": "textattack/bert-base-uncased-CoLA (INT8 ONNX)",
+    }
+
+
 def embed(text: str, max_length: int = 128) -> List[float]:
     """
     Run all-MiniLM-L6-v2 on *text* and return a mean-pooled 384-dim embedding.
@@ -358,6 +497,64 @@ def benchmark_tone(
 
     return {
         "model": "Xenova/distilbert-base-uncased-finetuned-sst-2-english (INT8)",
+        "n_total": n,
+        "n_correct": n_correct,
+        "accuracy": n_correct / n if n else 0.0,
+        "latency_ms_mean": mean_lat,
+        "latency_ms_p95": p95_lat,
+    }
+
+
+def benchmark_grammar(
+    texts: List[str],
+    labels: List[str],
+) -> Dict:
+    """
+    Score a list of (text, label) pairs against grammar acceptability classification.
+
+    labels must be "acceptable" or "unacceptable" (CoLA convention).
+    Use this to evaluate the CoLA edge tier model against grammar corpora
+    (UCI sentiment pairs, kaggle_gec, etc.).
+
+    Returns a dict:
+      {
+        "model": str,
+        "n_total": int,
+        "n_correct": int,
+        "accuracy": float,
+        "latency_ms_mean": float,
+        "latency_ms_p95": float,
+      }
+
+    Raises RuntimeError if cola_available() is False.
+    """
+    import time
+
+    if not cola_available():
+        raise RuntimeError(
+            "[onnx_backend] CoLA grammar model unavailable. "
+            "Run: python scripts/export_cola_onnx.py"
+        )
+
+    latencies: List[float] = []
+    n_correct = 0
+
+    for text, expected_label in zip(texts, labels):
+        t0 = time.perf_counter()
+        result = classify_grammar(text)
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+        latencies.append(elapsed_ms)
+
+        if result["label"] == expected_label.lower():
+            n_correct += 1
+
+    n = len(latencies)
+    sorted_lat = sorted(latencies)
+    mean_lat = sum(latencies) / n if n else 0.0
+    p95_lat = sorted_lat[int(n * 0.95)] if n else 0.0
+
+    return {
+        "model": "textattack/bert-base-uncased-CoLA (INT8 ONNX)",
         "n_total": n,
         "n_correct": n_correct,
         "accuracy": n_correct / n if n else 0.0,
