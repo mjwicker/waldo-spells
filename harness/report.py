@@ -229,7 +229,7 @@ def main() -> None:
     )
 
     args = parser.parse_args()
-    tiers = tuple(t.strip() for t in args.tiers.split(","))
+    tiers = tuple(t.strip() for t in str(args.tiers).split(","))
     run_dir = args.out_dir / args.run_id
     run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -278,6 +278,24 @@ def main() -> None:
                 file=sys.stderr,
             )
             sys.exit(2)
+
+        # Per-tier accuracy summary — visible in CI logs for all functional tiers.
+        # Uses applicable rows (excludes tier_not_applicable skips) so the numbers
+        # reflect actual evaluated items, not corpus-level counts.
+        applicable_rows = [
+            r for r in tier_rows
+            if not (r.error or "").startswith("tier_not_applicable")
+        ]
+        ran = sum(1 for r in applicable_rows if r.available)
+        _no_metrics: dict[str, float | int] = {}
+        tier_m = by_tier(results).get(tier, _no_metrics)
+        tier_f1 = tier_m.get("f1", float("nan"))
+        tier_prec = tier_m.get("precision", float("nan"))
+        tier_rec = tier_m.get("recall", float("nan"))
+        f1_str = f"{tier_f1:.3f}" if not math.isnan(tier_f1) else "n/a"
+        prec_str = f"{tier_prec:.3f}" if not math.isnan(tier_prec) else "n/a"
+        rec_str = f"{tier_rec:.3f}" if not math.isnan(tier_rec) else "n/a"
+        print(f"Tier '{tier}': {ran}/{eligible} ran | precision={prec_str} recall={rec_str} F1={f1_str}")
 
     csv_path = run_dir / "results.csv"
     summary_path = run_dir / "summary.md"

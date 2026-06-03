@@ -1,7 +1,6 @@
 """Metrics computation for test results."""
 
-from typing import List, Dict
-from statistics import median, mean
+from statistics import mean
 
 
 def _overlaps(a_start: int, a_end: int, b_start: int, b_end: int) -> bool:
@@ -64,7 +63,7 @@ def true_negatives(result) -> int:
     return 0
 
 
-def string_match_rate(results: List) -> float:
+def string_match_rate(results: list) -> float:
     """
     Of all overlapping (TP) correction pairs, fraction where predicted
     replacement matches gold correction (case-insensitive, whitespace-normalized).
@@ -86,31 +85,31 @@ def string_match_rate(results: List) -> float:
     return matched / total_tp if total_tp else 0.0
 
 
-def precision(results: List) -> float:
+def precision(results: list) -> float:
     tp = sum(true_positives(r) for r in results)
     fp = sum(false_positives(r) for r in results)
     return tp / (tp + fp) if (tp + fp) else 0.0
 
 
-def recall(results: List) -> float:
+def recall(results: list) -> float:
     tp = sum(true_positives(r) for r in results)
     fn = sum(false_negatives(r) for r in results)
     return tp / (tp + fn) if (tp + fn) else 0.0
 
 
-def f1(results: List) -> float:
+def f1(results: list) -> float:
     prec = precision(results)
     rec = recall(results)
     return 2 * (prec * rec) / (prec + rec) if (prec + rec) else 0.0
 
 
-def fp_rate(results: List) -> float:
+def fp_rate(results: list) -> float:
     fp = sum(false_positives(r) for r in results)
     tn = sum(true_negatives(r) for r in results)
     return fp / (fp + tn) if (fp + tn) else 0.0
 
 
-def latency_stats(results: List) -> Dict:
+def latency_stats(results: list) -> dict[str, float]:
     available_latencies = [
         r.latency_ms for r in results if r.available and r.latency_ms >= 0
     ]
@@ -126,7 +125,7 @@ def latency_stats(results: List) -> Dict:
     }
 
 
-def context_detection_accuracy(results: List) -> float:
+def context_detection_accuracy(results: list) -> float:
     """Fraction of items where detected_input_type matches item.input_type."""
     eligible = [r for r in results if r.detected_input_type is not None]
     if not eligible:
@@ -135,7 +134,7 @@ def context_detection_accuracy(results: List) -> float:
     return correct / len(eligible)
 
 
-def tone_accuracy(results: List) -> float:
+def tone_accuracy(results: list) -> float:
     """Fraction of tone-task items where predicted_label matches expected_label."""
     tone = [r for r in results if getattr(r, "task", None) == "tone"
             and r.expected_label is not None and r.predicted_label is not None]
@@ -145,11 +144,11 @@ def tone_accuracy(results: List) -> float:
     return correct / len(tone)
 
 
-def by_input_type(results: List) -> Dict[str, Dict]:
-    by_type: Dict[str, List] = {}
+def by_input_type(results: list) -> dict[str, dict[str, float | int]]:
+    by_type: dict[str, list] = {}
     for result in results:
         by_type.setdefault(result.input_type, []).append(result)
-    output = {}
+    output: dict[str, dict[str, float | int]] = {}
     for input_type, type_results in by_type.items():
         stats = latency_stats(type_results)
         output[input_type] = {
@@ -163,11 +162,11 @@ def by_input_type(results: List) -> Dict[str, Dict]:
     return output
 
 
-def by_tier(results: List) -> Dict[str, Dict]:
-    by_t: Dict[str, List] = {}
+def by_tier(results: list) -> dict[str, dict[str, float | int]]:
+    by_t: dict[str, list] = {}
     for result in results:
         by_t.setdefault(result.tier, []).append(result)
-    output = {}
+    output: dict[str, dict[str, float | int]] = {}
     for tier, tier_results in by_t.items():
         # Exclude tier_not_applicable rows — these items explicitly cannot be evaluated
         # by this tier (e.g., grammar-error items evaluated against a spell-check tier).
@@ -189,15 +188,15 @@ def by_tier(results: List) -> Dict[str, Dict]:
     return output
 
 
-def by_error_type(results: List) -> Dict[str, Dict]:
+def by_error_type(results: list) -> dict[str, dict[str, float | int]]:
     """Group span_correction results by error_type and compute metrics."""
-    by_et: Dict[str, List] = {}
+    by_et: dict[str, list] = {}
     for result in results:
         if getattr(result, "task", "span_correction") != "span_correction":
             continue
         et = getattr(result, "error_type", None) or "unknown"
         by_et.setdefault(et, []).append(result)
-    output = {}
+    output: dict[str, dict[str, float | int]] = {}
     for et, et_results in by_et.items():
         output[et] = {
             "precision": precision(et_results),
