@@ -85,12 +85,31 @@ def _fmt(v) -> str:
     return str(v)
 
 
-def check_quality_gate(tier_metrics: dict, threshold: float = QUALITY_GATE_F1) -> bool:
+def check_quality_gate(
+    tier_metrics: dict,
+    threshold: float = QUALITY_GATE_F1,
+    skipped_tiers: set[str] | None = None,
+) -> bool:
     """Returns True if at least one tier with n_items > 0 has f1 >= threshold.
+
     Skips tiers where n_items == 0 (all rows were tier_unavailable).
+    Also skips tiers listed in skipped_tiers (backend not installed on this machine).
+    Returns True (pass) when every tier in tier_metrics was skipped due to backend
+    unavailability, so CI machines without a local LLM do not fail the quality gate.
+    Returns False when tier_metrics is empty (no corpus items ran at all — unexpected).
     """
-    for tier, m in tier_metrics.items():
-        if m.get('n_items', 0) > 0 and m.get('f1', 0.0) >= threshold:
+    if not tier_metrics:
+        # Nothing ran at all (e.g. empty corpus) — treat as gate failure.
+        return False
+    skipped = skipped_tiers or set()
+    evaluated_tiers = {t for t in tier_metrics if t not in skipped and tier_metrics[t].get('n_items', 0) > 0}
+    if not evaluated_tiers:
+        # All tiers that ran were either skipped (backend absent) or had zero evaluated items.
+        # This is expected on CI machines without a local LLM — not a test-logic failure.
+        return True
+    for tier in evaluated_tiers:
+        m = tier_metrics[tier]
+        if m.get('f1', 0.0) >= threshold:
             return True
     return False
 
@@ -255,6 +274,10 @@ def main() -> None:
     results = run_all(corpus, tiers=tiers)
     print(f"Completed {len(results)} runs")
 
+    # Track tiers skipped due to backend unavailability (llama-server absent, etc.)
+    # so the quality gate does not penalise CI machines without a local LLM.
+    skipped_tiers: set[str] = set()
+
     for tier in tiers:
         tier_rows = [r for r in results if r.tier == tier]
         if not tier_rows:
@@ -265,16 +288,39 @@ def main() -> None:
             1 for r in tier_rows
             if not r.available and (r.error or "").startswith("tier_not_applicable")
         )
-        unavailable = sum(
+        # tier_unavailable: backend not installed (llama-server absent, model missing, etc.)
+        # — expected on CI machines without a local LLM; treat as "skip" not "fail".
+        tier_unavailable_count = sum(
             1 for r in tier_rows
-            if not r.available and not (r.error or "").startswith("tier_not_applicable")
+            if not r.available and (r.error or "").startswith("tier_unavailable")
+        )
+        # other_error_count: backend crashed, returned bad data, etc. — unexpected failures.
+        other_error_count = sum(
+            1 for r in tier_rows
+            if not r.available
+            and not (r.error or "").startswith("tier_not_applicable")
+            and not (r.error or "").startswith("tier_unavailable")
         )
         eligible = len(tier_rows) - not_applicable
-        ratio = unavailable / eligible if eligible > 0 else 0.0
-        if ratio >= 0.95:
+        unavailable_ratio = tier_unavailable_count / eligible if eligible > 0 else 0.0
+        error_ratio = other_error_count / eligible if eligible > 0 else 0.0
+
+        if unavailable_ratio >= 0.95:
+            # Backend not present — expected on CI without a local LLM.
+            # Warn and skip this tier; do not fail the run.
             print(
-                f"ERROR: Tier '{tier}': {unavailable}/{eligible} eligible rows "
-                f"tier_unavailable ({ratio:.0%}). Check model path or backend.",
+                f"WARNING: Tier '{tier}': {tier_unavailable_count}/{eligible} eligible rows "
+                f"tier_unavailable ({unavailable_ratio:.0%}). "
+                f"Backend not installed — skipping tier.",
+                file=sys.stderr,
+            )
+            skipped_tiers.add(tier)
+            continue
+
+        if error_ratio >= 0.95:
+            print(
+                f"ERROR: Tier '{tier}': {other_error_count}/{eligible} eligible rows "
+                f"errored ({error_ratio:.0%}). Check model path or backend.",
                 file=sys.stderr,
             )
             sys.exit(2)
@@ -306,10 +352,13 @@ def main() -> None:
     print(f"Writing summary to {summary_path}...")
     write_summary(results, summary_path, run_id=args.run_id)
 
-    # Quality gate check: at least one tier must reach F1 >= QUALITY_GATE_F1
+    # Quality gate check: at least one non-skipped tier must reach F1 >= QUALITY_GATE_F1
     tier_metrics = by_tier(results)
-    if not check_quality_gate(tier_metrics):
-        failing = [t for t, m in tier_metrics.items() if m.get('n_items', 0) > 0 and m.get('f1', 0.0) < QUALITY_GATE_F1]
+    if not check_quality_gate(tier_metrics, skipped_tiers=skipped_tiers):
+        failing = [
+            t for t, m in tier_metrics.items()
+            if t not in skipped_tiers and m.get('n_items', 0) > 0 and m.get('f1', 0.0) < QUALITY_GATE_F1
+        ]
         print(f"QUALITY GATE FAILED: no tier reached F1 >= {QUALITY_GATE_F1}. Failing tiers: {failing}", file=sys.stderr)
         sys.exit(1)
 

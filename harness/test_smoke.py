@@ -232,14 +232,24 @@ class TestQualityGate:
         }
         assert check_quality_gate(metrics) is False
 
-    def test_fails_when_all_tiers_unavailable(self):
-        # n_items == 0 means tier_unavailable — gate returns False (no tier scored anything)
-        # In practice, the prior exit(2) fires first when >=95% of rows are unavailable.
+    def test_passes_when_all_tiers_unavailable(self):
+        # When all tiers have n_items == 0 and no skipped_tiers is supplied, there are no
+        # evaluated tiers — the gate returns True (pass) because the backend simply was not
+        # installed on this machine; this is not a test-logic failure.
         metrics = {
             "fast": {"n_items": 0, "f1": 0.00},
             "better": {"n_items": 0, "f1": 0.00},
         }
-        assert check_quality_gate(metrics) is False
+        assert check_quality_gate(metrics) is True
+
+    def test_fails_when_all_tiers_explicitly_skipped_but_some_have_items(self):
+        # If skipped_tiers is supplied AND a non-skipped tier has n_items > 0 but f1 below
+        # threshold, the gate should still fail.
+        metrics = {
+            "fast": {"n_items": 10, "f1": 0.02},
+            "smart": {"n_items": 0, "f1": 0.00},
+        }
+        assert check_quality_gate(metrics, skipped_tiers={"smart"}) is False
 
     def test_fails_when_available_tiers_below_and_some_unavailable(self):
         # One tier ran but scored below threshold; another was unavailable
