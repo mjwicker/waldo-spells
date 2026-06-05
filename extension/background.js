@@ -1,11 +1,14 @@
 // background.js — Waldo Spells background service module (MV3)
 //
-// Handles two message actions:
-//   "analyze"      — forward text to local server (fast / better / smart tiers)
-//   "edge_analyze" — run DistilBERT Edge tier directly in-extension via Transformers.js
-//   "health"       — ping local server health endpoint
+// Handles message actions:
+//   "analyze"       — forward text to local server (fast / better tiers)
+//   "edge_analyze"  — run DistilBERT Edge tier directly in-extension via Transformers.js
+//   "smart_analyze" — forward paragraph to Smart tier via wrapper /smart endpoint
+//   "smart_status"  — query /smart_status without sending text (popup badge)
+//   "health"        — ping local server health endpoint
 
 import { analyzeEdge, warmUp } from "./edge_worker.js";
+import { analyzeSmart, checkSmartStatus } from "./smart_worker.js";
 
 const ANALYZE_URL = "http://127.0.0.1:8765/analyze";
 const HEALTH_URL  = "http://127.0.0.1:8765/health";
@@ -20,6 +23,14 @@ browser.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   }
   if (msg.action === "edge_analyze") {
     handleEdgeAnalyze(msg).then(sendResponse);
+    return true;
+  }
+  if (msg.action === "smart_analyze") {
+    handleSmartAnalyze(msg).then(sendResponse);
+    return true;
+  }
+  if (msg.action === "smart_status") {
+    checkSmartStatus().then(sendResponse);
     return true;
   }
   if (msg.action === "health") {
@@ -45,6 +56,15 @@ async function handleAnalyze({ text, context_hint }) {
   } catch (_) {
     return { corrections: [], error: "server_unreachable" };
   }
+}
+
+// ── Smart tier — Qwen2.5-3B-Instruct via wrapper /smart ──────────────────────
+
+async function handleSmartAnalyze({ text, context_hint }) {
+  const { enabled = true } = await browser.storage.local.get("enabled");
+  if (!enabled) return { corrections: [], available: false };
+
+  return analyzeSmart(text, context_hint);
 }
 
 // ── Edge tier — in-extension DistilBERT ONNX ─────────────────────────────────

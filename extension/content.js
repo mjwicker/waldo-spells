@@ -1,12 +1,19 @@
 (() => {
-  const DEBOUNCE_MS      = 600;
-  const EDGE_DEBOUNCE_MS = 1200; // longer — model load can be slow on first call
+  const DEBOUNCE_MS       = 600;
+  const EDGE_DEBOUNCE_MS  = 1200; // longer — model load can be slow on first call
+  const SMART_DEBOUNCE_MS = 800;  // per-paragraph; fires after double-newline only
 
   // WeakMap keeps tooltip refs without preventing GC of removed inputs
-  const tooltipMap      = new WeakMap();
-  const edgeOverlayMap  = new WeakMap(); // sentence underline overlays
-  let debounceTimer     = null;
-  let edgeDebounceTimer = null;
+  const tooltipMap       = new WeakMap();
+  const edgeOverlayMap   = new WeakMap(); // sentence underline overlays
+  const smartOverlayMap  = new WeakMap(); // Smart tier correction overlays
+  let debounceTimer      = null;
+  let edgeDebounceTimer  = null;
+  let smartDebounceTimer = null;
+
+  // Cached availability of Smart tier (updated on first /smart_status check).
+  // Prevents hammering the server on every keystroke.
+  let _smartAvailable    = null;  // null = unknown; true/false = known
 
   // ── Injected stylesheet for Edge tier underlines ──────────────────────────
 
@@ -217,6 +224,78 @@
     edgeOverlayMap.set(el, overlay);
   }
 
+  // ── Smart tier overlay ────────────────────────────────────────────────────
+  //
+  // The Smart tier surfaces inline rewrite suggestions (Grammarly-style) for
+  // passive voice, tone, and grammar.  Corrections are rendered as a floating
+  // badge list below the active element — not as an overlay mirror — because
+  // Smart corrections may span multiple words and need space to show both the
+  // original phrase and the rewrite suggestion side-by-side.
+  //
+  // Degradation: if the hardware gate fails the badge shows a short status
+  // message instead of corrections. Edge tier continues to fire normally.
+
+  function removeSmartOverlay(el) {
+    const badge = smartOverlayMap.get(el);
+    if (badge && badge.parentNode) badge.parentNode.removeChild(badge);
+    smartOverlayMap.delete(el);
+  }
+
+  function showSmartBadge(el, result) {
+    removeSmartOverlay(el);
+
+    const badge = document.createElement("div");
+    badge.setAttribute("data-waldo-smart", "1");
+    badge.style.cssText = [
+      "position:absolute",
+      "z-index:2147483647",
+      "background:#1a1a2e",
+      "color:#e0e0e0",
+      "border:1px solid #6060c0",
+      "border-radius:6px",
+      "padding:8px 12px",
+      "font:13px/1.5 system-ui,sans-serif",
+      "max-width:380px",
+      "box-shadow:0 4px 14px rgba(0,0,0,.5)",
+      "pointer-events:none",
+    ].join(";");
+
+    if (!result.available) {
+      // Hardware gate or server-offline message
+      badge.innerHTML =
+        `<span style="color:#facc15;font-weight:600">Waldo Smart:</span> `
+        + `<span style="color:#9ca3af">${result.message || "Smart tier unavailable"}</span>`;
+    } else {
+      const corrections = result.corrections ?? [];
+      if (!corrections.length) return; // nothing to show
+
+      const header = `<span style="color:#818cf8;font-weight:600;display:block;margin-bottom:4px">Waldo Smart suggestions</span>`;
+      const lines = corrections.slice(0, 5).map(c => {
+        const sug = (c.suggestions ?? []).slice(0, 2).join(" / ");
+        return `<span style="color:#f9a8d4;font-weight:600">«${c.original}»</span>`
+             + `&nbsp;→&nbsp;${sug || "<em style='color:#888'>see context</em>"}`;
+      });
+      badge.innerHTML = header + lines.join("<br>");
+    }
+
+    document.body.appendChild(badge);
+    smartOverlayMap.set(el, badge);
+
+    // Position directly below the element
+    const rect = el.getBoundingClientRect();
+    const scrollY = window.scrollY || document.documentElement.scrollTop;
+    const scrollX = window.scrollX || document.documentElement.scrollLeft;
+    const badgeLeft = Math.min(
+      rect.left + scrollX,
+      document.documentElement.clientWidth - 384 + scrollX,
+    );
+    badge.style.top  = `${rect.bottom + scrollY + 6}px`;
+    badge.style.left = `${Math.max(0, badgeLeft)}px`;
+
+    // Auto-dismiss after 12 s so the badge doesn't linger after the user moves on
+    setTimeout(() => removeSmartOverlay(el), 12000);
+  }
+
   // ── Analysis ──────────────────────────────────────────────────────────────
 
   async function analyze(el) {
@@ -256,6 +335,54 @@
     }
   }
 
+  // Analyze the most-recently-completed paragraph through the Smart tier.
+  //
+  // Trigger conditions (either):
+  //   1. User typed a double newline (paragraph boundary) — per-paragraph mode.
+  //   2. Toolbar button pressed — on-demand for current element's full text.
+  //
+  // When _smartAvailable is false we still send the request once so the badge
+  // can display the hardware-gate message.  After that we suppress further
+  // requests until the user explicitly triggers on-demand (toolbar button).
+  async function analyzeSmartEl(el, { onDemand = false } = {}) {
+    if (shouldSkip(el)) return;
+    const text = el.value ?? el.innerText ?? "";
+    if (!text.trim()) { removeSmartOverlay(el); return; }
+
+    // Suppress auto (non-demand) triggers once we know Smart is unavailable
+    if (!onDemand && _smartAvailable === false) return;
+
+    // For auto triggers, analyze only the most-recently-completed paragraph
+    // (the text before the last double-newline boundary), not the full text.
+    // This keeps the request small and latency predictable.
+    let paragraph = text;
+    if (!onDemand) {
+      const idx = text.lastIndexOf("\n\n");
+      if (idx === -1) return; // no complete paragraph yet
+      paragraph = text.slice(0, idx).trim();
+      if (!paragraph) return;
+      // Take only the last paragraph (text after the previous \n\n)
+      const prev = paragraph.lastIndexOf("\n\n");
+      if (prev !== -1) paragraph = paragraph.slice(prev + 2).trim();
+      if (!paragraph) return;
+    }
+
+    try {
+      const resp = await browser.runtime.sendMessage({
+        action: "smart_analyze",
+        text: paragraph,
+        context_hint: getContextHint(el),
+      });
+      if (resp) {
+        // Update cached availability
+        _smartAvailable = resp.available ?? true;
+        showSmartBadge(el, resp);
+      }
+    } catch (_) {
+      // Background script unreachable — silent fail; Edge tier continues
+    }
+  }
+
   // ── Event handlers ────────────────────────────────────────────────────────
 
   function onInput(e) {
@@ -266,6 +393,18 @@
 
     debounceTimer     = setTimeout(() => analyze(e.target), DEBOUNCE_MS);
     edgeDebounceTimer = setTimeout(() => analyzeEdge(e.target), EDGE_DEBOUNCE_MS);
+
+    // Smart tier: trigger on paragraph boundary (double newline).
+    // We peek at the raw input event data to detect the second newline without
+    // walking the full textarea value on every keystroke.
+    const val = e.target.value ?? e.target.innerText ?? "";
+    if (val.includes("\n\n")) {
+      clearTimeout(smartDebounceTimer);
+      smartDebounceTimer = setTimeout(
+        () => analyzeSmartEl(e.target, { onDemand: false }),
+        SMART_DEBOUNCE_MS,
+      );
+    }
   }
 
   function onBlur(e) {
@@ -274,12 +413,34 @@
     clearTimeout(edgeDebounceTimer);
     analyze(e.target);
     analyzeEdge(e.target);
+    // Smart: don't auto-trigger on blur — paragraphs are the natural boundary
   }
 
   function onFocus(e) {
     removeTooltip(e.target);
     removeEdgeOverlay(e.target);
+    // Leave smart overlay in place on focus — user may still be reading suggestions
   }
+
+  // ── On-demand Smart trigger (toolbar button → message from popup) ──────────
+  //
+  // popup.js sends { action: "smart_demand", tabId } via runtime.sendMessage.
+  // background.js relays it to the content script as { action: "smart_demand" }.
+  // We listen here and call analyzeSmartEl on the currently-focused element.
+
+  browser.runtime.onMessage.addListener((msg) => {
+    if (msg.action !== "smart_demand") return;
+    const el = document.activeElement;
+    if (
+      el &&
+      !shouldSkip(el) &&
+      (el.tagName === "TEXTAREA" ||
+       el.tagName === "INPUT" ||
+       el.isContentEditable)
+    ) {
+      analyzeSmartEl(el, { onDemand: true });
+    }
+  });
 
   // ── Attachment ────────────────────────────────────────────────────────────
 
