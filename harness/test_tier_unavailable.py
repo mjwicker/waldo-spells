@@ -10,7 +10,6 @@ Contracts verified:
 """
 
 import sys
-from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
@@ -45,7 +44,7 @@ def _make_result(
 class TestTierUnavailableExitsZero:
     """100% tier_unavailable rows → exit 0 with WARNING, not exit 2."""
 
-    def test_all_tier_unavailable_on_smart_exits_zero(self, capsys):
+    def test_all_tier_unavailable_on_smart_exits_zero(self, capsys, tmp_path):
         """When all smart-tier rows are tier_unavailable, main() exits 0 (not 2)."""
         from report import main
         from corpus import CorpusItem
@@ -67,7 +66,7 @@ class TestTierUnavailableExitsZero:
             patch("report.run_all", return_value=results),
             patch("report.write_csv"),
             patch("report.write_summary"),
-            patch("sys.argv", ["report.py", "--tiers", "smart"]),
+            patch("sys.argv", ["report.py", "--tiers", "smart", "--out-dir", str(tmp_path)]),
         ):
             try:
                 main()
@@ -79,7 +78,7 @@ class TestTierUnavailableExitsZero:
             f"Expected exit 0 for 100% tier_unavailable on smart, got exit {exit_code}"
         )
 
-    def test_all_tier_unavailable_prints_warning_to_stderr(self, capsys):
+    def test_all_tier_unavailable_prints_warning_to_stderr(self, capsys, tmp_path):
         """When all rows are tier_unavailable, a WARNING is printed to stderr."""
         from report import main
         from corpus import CorpusItem
@@ -100,7 +99,7 @@ class TestTierUnavailableExitsZero:
             patch("report.run_all", return_value=results),
             patch("report.write_csv"),
             patch("report.write_summary"),
-            patch("sys.argv", ["report.py", "--tiers", "smart"]),
+            patch("sys.argv", ["report.py", "--tiers", "smart", "--out-dir", str(tmp_path)]),
         ):
             try:
                 main()
@@ -115,7 +114,7 @@ class TestTierUnavailableExitsZero:
             "WARNING should mention the tier name"
         )
 
-    def test_all_tiers_unavailable_exits_zero(self, capsys):
+    def test_all_tiers_unavailable_exits_zero(self, capsys, tmp_path):
         """When every tier is 100% tier_unavailable, main() exits 0 (CI without LLM)."""
         from report import main
         from corpus import CorpusItem
@@ -137,7 +136,7 @@ class TestTierUnavailableExitsZero:
             patch("report.run_all", return_value=results),
             patch("report.write_csv"),
             patch("report.write_summary"),
-            patch("sys.argv", ["report.py", "--tiers", "fast,smart"]),
+            patch("sys.argv", ["report.py", "--tiers", "fast,smart", "--out-dir", str(tmp_path)]),
         ):
             try:
                 main()
@@ -153,7 +152,7 @@ class TestTierUnavailableExitsZero:
 class TestMixedUnavailableAndBackendError:
     """When a tier has backend_error (not tier_unavailable) at >=95%, it still exits 2."""
 
-    def test_backend_error_ratio_high_still_exits_2(self, capsys):
+    def test_backend_error_ratio_high_still_exits_2(self, capsys, tmp_path):
         """19/20 rows backend_error (not tier_unavailable) → exit 2."""
         from report import main
         from corpus import CorpusItem
@@ -175,7 +174,7 @@ class TestMixedUnavailableAndBackendError:
             patch("report.run_all", return_value=results),
             patch("report.write_csv"),
             patch("report.write_summary"),
-            patch("sys.argv", ["report.py", "--tiers", "fast"]),
+            patch("sys.argv", ["report.py", "--tiers", "fast", "--out-dir", str(tmp_path)]),
         ):
             with pytest.raises(SystemExit) as exc_info:
                 main()
@@ -184,7 +183,7 @@ class TestMixedUnavailableAndBackendError:
             "Expected exit 2 when >=95% of rows are backend_error (not tier_unavailable)"
         )
 
-    def test_mixed_unavailable_and_backend_error_exits_2_on_error_ratio(self, capsys):
+    def test_mixed_unavailable_and_backend_error_exits_2_on_error_ratio(self, capsys, tmp_path):
         """A tier with some tier_unavailable AND mostly backend_error rows.
 
         Only backend_error rows count toward the >=95% error threshold.
@@ -213,7 +212,7 @@ class TestMixedUnavailableAndBackendError:
             patch("report.run_all", return_value=results),
             patch("report.write_csv"),
             patch("report.write_summary"),
-            patch("sys.argv", ["report.py", "--tiers", "fast"]),
+            patch("sys.argv", ["report.py", "--tiers", "fast", "--out-dir", str(tmp_path)]),
         ):
             try:
                 main()
@@ -226,7 +225,7 @@ class TestMixedUnavailableAndBackendError:
             "Should not exit 2 when neither unavailable_ratio nor error_ratio reaches 0.95"
         )
 
-    def test_all_tier_unavailable_does_not_exit_2(self, capsys):
+    def test_all_tier_unavailable_does_not_exit_2(self, capsys, tmp_path):
         """100% tier_unavailable rows must never trigger the error-ratio exit 2 path."""
         from report import main
         from corpus import CorpusItem
@@ -248,7 +247,7 @@ class TestMixedUnavailableAndBackendError:
             patch("report.run_all", return_value=results),
             patch("report.write_csv"),
             patch("report.write_summary"),
-            patch("sys.argv", ["report.py", "--tiers", "fast"]),
+            patch("sys.argv", ["report.py", "--tiers", "fast", "--out-dir", str(tmp_path)]),
         ):
             try:
                 main()

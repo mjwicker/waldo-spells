@@ -250,7 +250,9 @@ def main() -> None:
     args = parser.parse_args()
     tiers = tuple(t.strip() for t in str(args.tiers).split(","))
     run_dir = args.out_dir / args.run_id
-    run_dir.mkdir(parents=True, exist_ok=True)
+    # NOTE: run_dir is created just before writing results (not here) so that
+    # aborted runs — corpus load failures, early sys.exit() calls, missing
+    # backends — do not leave empty timestamp dirs in harness/results/.
 
     # Load corpus
     if args.corpus:
@@ -342,6 +344,10 @@ def main() -> None:
         prec_str = f"{tier_prec:.3f}" if not math.isnan(tier_prec) else "n/a"
         rec_str = f"{tier_rec:.3f}" if not math.isnan(tier_rec) else "n/a"
         print(f"Tier '{tier}': {ran}/{eligible} ran | precision={prec_str} recall={rec_str} F1={f1_str}")
+
+    # Create run_dir now — after all early-exit paths — so only successful runs
+    # leave a directory in harness/results/.
+    run_dir.mkdir(parents=True, exist_ok=True)
 
     csv_path = run_dir / "results.csv"
     summary_path = run_dir / "summary.md"

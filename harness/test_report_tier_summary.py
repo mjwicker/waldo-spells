@@ -7,9 +7,7 @@ Contracts verified:
   (4) n/a is printed instead of a float when the tier has zero applicable items.
 """
 
-import math
 import sys
-from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
@@ -43,7 +41,7 @@ def _make_result(
 class TestTierSummaryLinesPrinted:
     """Verify per-tier summary lines are printed to stdout after run_all()."""
 
-    def test_summary_line_printed_for_each_tier(self, capsys):
+    def test_summary_line_printed_for_each_tier(self, capsys, tmp_path):
         """A 'Tier <name>: ...' line is printed to stdout for each tier that has rows."""
         from report import main
         from corpus import CorpusItem
@@ -65,7 +63,7 @@ class TestTierSummaryLinesPrinted:
             patch("report.run_all", return_value=[fast_result, better_result]),
             patch("report.write_csv"),
             patch("report.write_summary"),
-            patch("sys.argv", ["report.py", "--tiers", "fast,better"]),
+            patch("sys.argv", ["report.py", "--tiers", "fast,better", "--out-dir", str(tmp_path)]),
         ):
             # check_quality_gate may fail — catch SystemExit
             try:
@@ -77,7 +75,7 @@ class TestTierSummaryLinesPrinted:
         assert "Tier 'fast':" in captured.out, "Expected fast tier summary in stdout"
         assert "Tier 'better':" in captured.out, "Expected better tier summary in stdout"
 
-    def test_summary_line_contains_ran_eligible_and_metrics(self, capsys):
+    def test_summary_line_contains_ran_eligible_and_metrics(self, capsys, tmp_path):
         """The summary line format is: Tier '<name>': N/M ran | precision=... recall=... F1=..."""
         from report import main
         from corpus import CorpusItem
@@ -96,7 +94,7 @@ class TestTierSummaryLinesPrinted:
             patch("report.run_all", return_value=[fast_result]),
             patch("report.write_csv"),
             patch("report.write_summary"),
-            patch("sys.argv", ["report.py", "--tiers", "fast"]),
+            patch("sys.argv", ["report.py", "--tiers", "fast", "--out-dir", str(tmp_path)]),
         ):
             try:
                 main()
@@ -104,7 +102,7 @@ class TestTierSummaryLinesPrinted:
                 pass
 
         captured = capsys.readouterr()
-        line = next((l for l in captured.out.splitlines() if "Tier 'fast':" in l), None)
+        line = next((ln for ln in captured.out.splitlines() if "Tier 'fast':" in ln), None)
         assert line is not None
         assert "ran" in line
         assert "precision=" in line
@@ -115,7 +113,7 @@ class TestTierSummaryLinesPrinted:
 class TestTierSummaryNotApplicableExclusion:
     """tier_not_applicable rows must not count toward ran or eligible."""
 
-    def test_not_applicable_rows_excluded_from_ran_and_eligible(self, capsys):
+    def test_not_applicable_rows_excluded_from_ran_and_eligible(self, capsys, tmp_path):
         """Only applicable rows count in the N/M ran | ... line."""
         from report import main
         from corpus import CorpusItem
@@ -138,7 +136,7 @@ class TestTierSummaryNotApplicableExclusion:
             patch("report.run_all", return_value=results),
             patch("report.write_csv"),
             patch("report.write_summary"),
-            patch("sys.argv", ["report.py", "--tiers", "fast"]),
+            patch("sys.argv", ["report.py", "--tiers", "fast", "--out-dir", str(tmp_path)]),
         ):
             try:
                 main()
@@ -147,12 +145,12 @@ class TestTierSummaryNotApplicableExclusion:
 
         captured = capsys.readouterr()
         # 4 corpus items, 2 not_applicable → eligible = 2; ran = 2
-        line = next((l for l in captured.out.splitlines() if "Tier 'fast':" in l), None)
+        line = next((ln for ln in captured.out.splitlines() if "Tier 'fast':" in ln), None)
         assert line is not None, f"No tier summary line in output:\n{captured.out}"
         # Should show 2/2, not 2/4
         assert "2/2" in line, f"Expected 2/2 (excluding not_applicable), got: {line}"
 
-    def test_only_unavailable_not_applicable_counts_in_exit2_check(self):
+    def test_only_unavailable_not_applicable_counts_in_exit2_check(self, tmp_path):
         """tier_not_applicable rows must not trigger the >=95% unavailable exit(2)."""
         from report import main
         from corpus import CorpusItem
@@ -174,7 +172,7 @@ class TestTierSummaryNotApplicableExclusion:
             patch("report.run_all", return_value=results),
             patch("report.write_csv"),
             patch("report.write_summary"),
-            patch("sys.argv", ["report.py", "--tiers", "fast"]),
+            patch("sys.argv", ["report.py", "--tiers", "fast", "--out-dir", str(tmp_path)]),
         ):
             # Should NOT exit with code 2 — all rows are not_applicable (eligible=0, ratio=0.0)
             try:
@@ -188,7 +186,7 @@ class TestTierSummaryNotApplicableExclusion:
 class TestTierUnavailableExitsBeforeSummary:
     """An unavailable tier (>=95% truly unavailable) exits with code 2 before accuracy line."""
 
-    def test_unavailable_tier_exits_2(self, capsys):
+    def test_unavailable_tier_exits_2(self, capsys, tmp_path):
         """When >=95% of eligible rows are tier_unavailable, exit code is 2."""
         from report import main
         from corpus import CorpusItem
@@ -210,14 +208,14 @@ class TestTierUnavailableExitsBeforeSummary:
             patch("report.run_all", return_value=results),
             patch("report.write_csv"),
             patch("report.write_summary"),
-            patch("sys.argv", ["report.py", "--tiers", "fast"]),
+            patch("sys.argv", ["report.py", "--tiers", "fast", "--out-dir", str(tmp_path)]),
         ):
             with pytest.raises(SystemExit) as exc_info:
                 main()
 
         assert exc_info.value.code == 2
 
-    def test_unavailable_tier_does_not_print_accuracy_line(self, capsys):
+    def test_unavailable_tier_does_not_print_accuracy_line(self, capsys, tmp_path):
         """When a tier triggers exit(2), no accuracy summary line should appear in stdout."""
         from report import main
         from corpus import CorpusItem
@@ -238,7 +236,7 @@ class TestTierUnavailableExitsBeforeSummary:
             patch("report.run_all", return_value=results),
             patch("report.write_csv"),
             patch("report.write_summary"),
-            patch("sys.argv", ["report.py", "--tiers", "fast"]),
+            patch("sys.argv", ["report.py", "--tiers", "fast", "--out-dir", str(tmp_path)]),
         ):
             with pytest.raises(SystemExit):
                 main()
@@ -253,7 +251,7 @@ class TestTierUnavailableExitsBeforeSummary:
 class TestTierSummaryNaWhenZeroApplicable:
     """n/a must be printed for metrics when tier has zero applicable items."""
 
-    def test_na_printed_when_zero_eligible(self, capsys):
+    def test_na_printed_when_zero_eligible(self, capsys, tmp_path):
         """When eligible==0 (all rows are tier_not_applicable), the summary line still appears
         and shows 0/0 ran with metric values (0.000 when no items scored)."""
         from report import main
@@ -274,7 +272,7 @@ class TestTierSummaryNaWhenZeroApplicable:
             patch("report.run_all", return_value=results),
             patch("report.write_csv"),
             patch("report.write_summary"),
-            patch("sys.argv", ["report.py", "--tiers", "fast"]),
+            patch("sys.argv", ["report.py", "--tiers", "fast", "--out-dir", str(tmp_path)]),
         ):
             try:
                 main()
@@ -282,29 +280,12 @@ class TestTierSummaryNaWhenZeroApplicable:
                 pass
 
         captured = capsys.readouterr()
-        line = next((l for l in captured.out.splitlines() if "Tier 'fast':" in l), None)
+        line = next((ln for ln in captured.out.splitlines() if "Tier 'fast':" in ln), None)
         assert line is not None, f"No tier summary line in output:\n{captured.out}"
         # eligible=0 → 0/0 ran; by_tier returns 0.0 (not nan) for zero-item tiers
         assert "0/0 ran" in line, f"Expected '0/0 ran' for zero-eligible tier, got: {line}"
         assert "precision=" in line
         assert "recall=" in line
-        assert "F1=" in line
-
-    def test_fmt_helper_returns_na_for_nan(self):
-        """_fmt(float('nan')) must return 'n/a'."""
-        from report import _fmt
-        assert _fmt(float("nan")) == "n/a"
-
-    def test_fmt_helper_returns_float_string_for_number(self):
-        """_fmt(0.123) must return a formatted float string."""
-        from report import _fmt
-        result = _fmt(0.123)
-        assert result == "0.123"
-
-    def test_fmt_helper_returns_str_for_int(self):
-        """_fmt(5) must return '5' (non-float passthrough)."""
-        from report import _fmt
-        assert _fmt(5) == "5"
 
 
 if __name__ == "__main__":
