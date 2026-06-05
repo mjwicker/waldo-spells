@@ -3,8 +3,8 @@
 Context-aware spelling and word-choice checker. Runs locally — no text leaves your machine.
 Firefox extension + 3-tier local backend.
 
-> **Status: v0.2.0 alpha** — Fast tier (spell-check) end-to-end and working.
-> Mid (T5/gec-t5_small) and Smart (Qwen2.5-3B) tiers are wired but require model downloads (see below).
+> **Status: v0.4.0 alpha** — Fast tier (spell-check) and Edge tier (ONNX classification) end-to-end and working.
+> Smart tier (Qwen2.5-3B) is wired but requires model downloads (see below).
 
 ---
 
@@ -20,7 +20,7 @@ Firefox extension ──HTTP──▶ wrapper/server.py ──▶ tier_router �
 | Tier | Backend | Latency | Status |
 |------|---------|---------|--------|
 | Fast | pyenchant over system hunspell | < 1 ms | Working |
-| Mid | gec-t5_small via CTranslate2 INT8 | 6–10 s | Wired, model not bundled |
+| Edge | DistilBERT ONNX via Transformers.js | < 500 ms | Working |
 | Smart | Qwen2.5-3B-Q4_K_M via llama.cpp | 30–90 s | Wired, model not bundled |
 
 ---
@@ -83,6 +83,15 @@ research/     Model research notes and T5/GGUF investigation reports
 
 ---
 
+## Test Results
+
+Test suite: **164 passing** (33 skipped, 0 failed)
+
+Run with:
+```bash
+uv run pytest
+```
+
 ## Benchmark results
 
 Fast tier baseline from `harness/results/analysis.md`:
@@ -96,8 +105,8 @@ Fast tier baseline from `harness/results/analysis.md`:
 
 ## Roadmap
 
-- **v0.3.0** — `contenteditable` support (Notion, Gmail), per-site enable/disable
-- **v1.0.0** — Mozilla AMO publish, homophone detection via Mid/Smart tiers
+- **v0.5.0** — Smart tier (tone + rewrite suggestions), local llama.cpp backend
+- **v1.0.0** — Mozilla AMO publish, full capability set, graceful degradation
 
 ---
 
