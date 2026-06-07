@@ -1,84 +1,96 @@
-// edge_worker.js — Edge tier inference using Transformers.js v4 + BERT-CoLA ONNX
+// edge_worker.js — Edge tier inference using locally bundled ORT + Transformers.js
 //
-// Loaded as an ES module from background.js via dynamic import.
-// Classifies grammatical acceptability (ACCEPTABLE / UNACCEPTABLE) using
-// textattack/bert-base-uncased-CoLA (INT8 ONNX).
-// The model is ~100 MB; Transformers.js fetches and caches it in the browser
-// Cache API on first use — no network required after initial download.
+// Do NOT set globalThis[Symbol.for("onnxruntime")]. If that symbol is present,
+// Transformers.js skips its device-setup block (et/op stay empty → no valid devices
+// → "Unsupported device" error at pipeline creation time).
 //
-// Model fix (T-SPELLS-EDGE-3):
-//   The previous model (Xenova/distilbert-base-uncased-finetuned-sst-2-english)
-//   was a 2-class sentiment classifier, not a grammar detector.  It produced
-//   near-random output (F1 = 0.005) on grammar corpora because POSITIVE/NEGATIVE
-//   sentiment has no correlation with grammatical acceptability.
-//   Replaced with textattack/bert-base-uncased-CoLA which is fine-tuned on the
-//   Corpus of Linguistic Acceptability (CoLA) and outputs ACCEPTABLE/UNACCEPTABLE.
-//
-// Architecture: zero-dependency on the local server (port 8765).
-// This tier runs entirely inside the extension process.
+// ORT is imported statically (synchronous) so background.js can finish registering
+// its onMessage listener before any heavy async work starts. Transformers.js is
+// loaded lazily inside getPipeline() — the top-level await that was here before
+// blocked background.js from fully initializing, causing Firefox to restart the
+// background page mid-load and abort the in-flight ORT worker fetch (AbortError).
 
-// ── Transformers.js bootstrap ─────────────────────────────────────────────────
-//
-// Import from the locally-bundled vendor copy so the extension works offline
-// after the model has been cached. The ONNX Runtime WASM backend files are
-// loaded from jsDelivr CDN at first run; after that they are cached by the
-// browser. Users on air-gapped machines should load the extension once while
-// online to prime the cache.
+// ── Step 1: Load ORT (static import — synchronous, registers backends) ──────────
+import * as ort from "./vendor/ort.wasm.min.mjs";
 
-import { pipeline, env } from "./vendor/transformers.web.min.js";
+// ── Step 2: Configure ORT WASM paths (before any session is created) ─────────
+ort.env.wasm.wasmPaths = self.location.origin + "/vendor/wasm/";
+ort.env.wasm.numThreads = 1;
 
-// Point WASM runtime at jsDelivr so we don't have to ship 13 MB of WASM.
-// After first run the browser caches these automatically.
-env.backends.onnx.wasm.wasmPaths =
-  "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.26.0/dist/";
+// ── Lazy Transformers.js loader ───────────────────────────────────────────────
+// Imported inside getPipeline() so this module evaluates synchronously and
+// background.js registers its listeners immediately.
 
-// Allow remote model download on first run; Cache API stores the result.
-env.allowRemoteModels = true;
-env.useBrowserCache  = true;
+let _transformers = null;
+
+async function loadTransformers() {
+  if (_transformers) return _transformers;
+
+  // ── Diagnostic pre-flight ─────────────────────────────────────────────────
+  console.log("[WaldoSpells][edge] SAB:", typeof SharedArrayBuffer);
+  console.log("[WaldoSpells][edge] wasmPaths:", ort.env.wasm.wasmPaths);
+
+  // Can we reach the WASM binary?
+  try {
+    const r = await fetch(ort.env.wasm.wasmPaths + "ort-wasm-simd.wasm", { method: "HEAD" });
+    console.log("[WaldoSpells][edge] wasm HEAD:", r.ok, r.status, r.headers.get("content-type"));
+  } catch (e) { console.error("[WaldoSpells][edge] wasm HEAD failed:", e); }
+
+  // Can we reach the model config?
+  const modelBase = self.location.origin + "/models/textattack/bert-base-uncased-CoLA/";
+  try {
+    const r = await fetch(modelBase + "config.json");
+    console.log("[WaldoSpells][edge] config.json:", r.ok, r.status);
+  } catch (e) { console.error("[WaldoSpells][edge] config.json failed:", e); }
+
+  // ── Load Transformers.js ──────────────────────────────────────────────────
+  console.log("[WaldoSpells][edge] importing transformers.js…");
+  const tj = await import("./vendor/transformers.web.min.js");
+  console.log("[WaldoSpells][edge] transformers.js loaded, env keys:", Object.keys(tj.env).join(", "));
+
+  tj.env.localModelPath    = self.location.origin + "/models/";
+  tj.env.allowLocalModels  = true;
+  tj.env.allowRemoteModels = false;
+  tj.env.useBrowserCache   = false;
+  tj.env.useWasmCache      = false;  // extension context can't use browser cache API
+  _transformers = tj;
+  return _transformers;
+}
 
 // ── Singleton pipeline ────────────────────────────────────────────────────────
 
-// CoLA-trained grammar acceptability model.
-// Labels: ACCEPTABLE (sentence is grammatically well-formed) /
-//         UNACCEPTABLE (sentence has a grammar error).
-// Source: textattack/bert-base-uncased-CoLA on HuggingFace.
-// Note: Transformers.js will load the ONNX weights from the HuggingFace Hub.
-// The model is fine-tuned on CoLA (Corpus of Linguistic Acceptability),
-// eval_mcc ≈ 0.534 on the CoLA dev set.
 const MODEL_ID = "textattack/bert-base-uncased-CoLA";
 
-let _pipe    = null;   // pipeline instance once loaded
-let _loading = false;  // guard against concurrent init
-let _ready   = false;  // true once pipeline is usable
+let _pipe    = null;
+let _loading = false;
+let _ready   = false;
+let _failed  = false;   // set permanently on first failure — prevents reload storms
+const _waitQueue = [];
 
-const _waitQueue = []; // callbacks waiting for pipeline to be ready
-
-/**
- * Initialise (or return the cached) classification pipeline.
- * Safe to call concurrently — concurrent callers wait on the same promise.
- */
 async function getPipeline() {
   if (_ready) return _pipe;
+  if (_failed) throw new Error("edge pipeline permanently failed — reload extension to retry");
 
   return new Promise((resolve, reject) => {
     _waitQueue.push({ resolve, reject });
-
-    if (_loading) return; // another caller already booting the pipeline
+    if (_loading) return;
     _loading = true;
 
-    pipeline("text-classification", MODEL_ID, {
-      quantized: true, // request INT8 ONNX variant
-      dtype: "int8",
-    })
+    console.log("[WaldoSpells][edge] pipeline loading…");
+    loadTransformers()
+      .then(({ pipeline }) => pipeline("text-classification", MODEL_ID, { dtype: "fp32" }))
       .then((p) => {
+        console.log("[WaldoSpells][edge] pipeline ready");
         _pipe  = p;
         _ready = true;
-        for (const waiter of _waitQueue) waiter.resolve(p);
+        for (const w of _waitQueue) w.resolve(p);
         _waitQueue.length = 0;
       })
       .catch((err) => {
-        _loading = false; // allow retry
-        for (const waiter of _waitQueue) waiter.reject(err);
+        console.error("[WaldoSpells][edge] pipeline failed:", err);
+        _failed  = true;   // disable further attempts this session
+        _loading = false;
+        for (const w of _waitQueue) w.reject(err);
         _waitQueue.length = 0;
       });
   });
@@ -86,72 +98,31 @@ async function getPipeline() {
 
 // ── Sentence splitter ─────────────────────────────────────────────────────────
 
-/**
- * Split `text` into sentences on . ? ! boundaries.
- * Preserves trailing punctuation. Skips blank fragments.
- *
- * @param {string} text
- * @returns {string[]}
- */
 function splitSentences(text) {
-  // Split on sentence-ending punctuation followed by whitespace or end-of-string.
-  // Avoids splitting on decimal numbers (e.g. "3.14") by requiring the
-  // character before the period to be a word character (not a digit).
   return text
     .split(/(?<=[.?!])\s+/)
     .map((s) => s.trim())
-    .filter((s) => s.length > 3); // ignore very short fragments
+    .filter((s) => s.length > 3);
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-/**
- * Classify each sentence in `text` for grammatical acceptability.
- * Returns an array of objects describing any grammatically unacceptable sentences.
- *
- * Labels from the CoLA model:
- *   ACCEPTABLE   — sentence is grammatically well-formed
- *   UNACCEPTABLE — sentence contains a grammar error
- *
- * Only sentences classified as UNACCEPTABLE with score ≥ 0.65 are returned.
- * Callers (e.g. content.js) render these as inline grammar error highlights.
- *
- * @param {string} text
- * @returns {Promise<Array<{sentence: string, label: string, score: number}>>}
- */
 export async function analyzeEdge(text) {
   const pipe = await getPipeline();
-
   const sentences = splitSentences(text);
   if (!sentences.length) return [];
 
   const results = await pipe(sentences, { topk: 1 });
-
-  // `results` is an array of arrays when multiple inputs are passed,
-  // or a single array when one input is passed.
   const normalised = sentences.length === 1 ? [results] : results;
 
   return normalised
     .map((result, i) => {
       const top = Array.isArray(result) ? result[0] : result;
-      return {
-        sentence : sentences[i],
-        label    : top.label,  // "ACCEPTABLE" or "UNACCEPTABLE"
-        score    : top.score,
-      };
+      return { sentence: sentences[i], label: top.label, score: top.score };
     })
-    // Surface UNACCEPTABLE sentences only — these are the grammar errors.
-    // Threshold 0.65: lower than the old 0.70 to improve recall for short sentences.
     .filter((r) => r.label === "UNACCEPTABLE" && r.score >= 0.65);
 }
 
-/**
- * Warm up the CoLA grammar pipeline in the background.
- * Called once at service-worker startup so the first user request is fast.
- * The CoLA model (~100 MB) is downloaded and cached by the browser on first use.
- */
 export function warmUp() {
-  getPipeline().catch(() => {
-    // Silently swallow warm-up errors — offline at startup is fine.
-  });
+  getPipeline().catch(() => {});
 }

@@ -39,12 +39,7 @@ identity + conventions only.
 Do NOT report a task as complete until the changelog entry is staged.
 
 ## Shared-State Discipline
-After any significant task or session:
-1. Append to `~/Documents/Waldo/Wiki/log.md`:
-   `## [YYYY-MM-DD] claude | action | grammar-checker — subject`
-2. Update `Wiki/projects/grammar-checker/roadmap.md` if sprint state changed
-3. Update `Wiki/sprint.md` task status (⚪ → 🔵 when starting, 🔵 → ✅ when done)
-4. Update `Wiki/project-index.md` `updated:` date if any source-of-truth file moved
+See parent `../.claude/CLAUDE.md` for shared-state rules. Also update `Wiki/projects/grammar-checker/roadmap.md` if sprint state changed.
 
 ## Key Claims
 

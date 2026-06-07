@@ -105,12 +105,23 @@
       "pointer-events:none",
     ].join(";");
 
-    const lines = corrections.map(c => {
+    for (const [i, c] of corrections.entries()) {
+      if (i > 0) tip.appendChild(document.createElement("br"));
+      const origSpan = document.createElement("span");
+      origSpan.style.cssText = "color:#f9a8d4;font-weight:600";
+      origSpan.textContent = `«${c.original}»`;  // user text — textContent only
+      tip.appendChild(origSpan);
+      tip.appendChild(document.createTextNode(" → "));
       const sugs = c.suggestions.slice(0, 3).join(", ");
-      return `<span style="color:#f9a8d4;font-weight:600">«${c.original}»</span>`
-           + `&nbsp;→&nbsp;${sugs || "<em style='color:#888'>no suggestions</em>"}`;
-    });
-    tip.innerHTML = lines.join("<br>");
+      if (sugs) {
+        tip.appendChild(document.createTextNode(sugs));
+      } else {
+        const em = document.createElement("em");
+        em.style.color = "#888";
+        em.textContent = "no suggestions";
+        tip.appendChild(em);
+      }
+    }
 
     document.body.appendChild(tip);
     tooltipMap.set(el, tip);
@@ -212,8 +223,8 @@
       `white-space:pre-wrap`,
       `overflow:hidden`,
       `background:transparent`,
-      // Render behind the textarea so the overlay underlines show through
-      `z-index:${parseInt(cs.zIndex || "0", 10) - 1}`,
+      // Render above page elements; pointer-events:none lets typing through
+      `z-index:2147483646`,
       `pointer-events:none`,
       `box-sizing:${cs.boxSizing}`,
       `color:transparent`,     // hide text — only underline decorations visible
@@ -262,20 +273,38 @@
 
     if (!result.available) {
       // Hardware gate or server-offline message
-      badge.innerHTML =
-        `<span style="color:#facc15;font-weight:600">Waldo Smart:</span> `
-        + `<span style="color:#9ca3af">${result.message || "Smart tier unavailable"}</span>`;
+      const labelSpan = document.createElement("span");
+      labelSpan.style.cssText = "color:#facc15;font-weight:600";
+      labelSpan.textContent = "Waldo Smart:";
+      const msgSpan = document.createElement("span");
+      msgSpan.style.color = "#9ca3af";
+      msgSpan.textContent = " " + (result.message || "Smart tier unavailable");  // server text
+      badge.append(labelSpan, msgSpan);
     } else {
       const corrections = result.corrections ?? [];
       if (!corrections.length) return; // nothing to show
 
-      const header = `<span style="color:#818cf8;font-weight:600;display:block;margin-bottom:4px">Waldo Smart suggestions</span>`;
-      const lines = corrections.slice(0, 5).map(c => {
+      const headerSpan = document.createElement("span");
+      headerSpan.style.cssText = "color:#818cf8;font-weight:600;display:block;margin-bottom:4px";
+      headerSpan.textContent = "Waldo Smart suggestions";
+      badge.appendChild(headerSpan);
+      for (const [i, c] of corrections.slice(0, 5).entries()) {
+        if (i > 0) badge.appendChild(document.createElement("br"));
+        const origSpan = document.createElement("span");
+        origSpan.style.cssText = "color:#f9a8d4;font-weight:600";
+        origSpan.textContent = `«${c.original}»`;  // user text — textContent only
+        badge.appendChild(origSpan);
+        badge.appendChild(document.createTextNode(" → "));
         const sug = (c.suggestions ?? []).slice(0, 2).join(" / ");
-        return `<span style="color:#f9a8d4;font-weight:600">«${c.original}»</span>`
-             + `&nbsp;→&nbsp;${sug || "<em style='color:#888'>see context</em>"}`;
-      });
-      badge.innerHTML = header + lines.join("<br>");
+        if (sug) {
+          badge.appendChild(document.createTextNode(sug));
+        } else {
+          const em = document.createElement("em");
+          em.style.color = "#888";
+          em.textContent = "see context";
+          badge.appendChild(em);
+        }
+      }
     }
 
     document.body.appendChild(badge);
@@ -310,6 +339,7 @@
         context_hint: getContextHint(el),
       });
       if (resp && Array.isArray(resp.corrections)) {
+        console.log(`[WaldoSpells][fast] ${text.length}ch → ${resp.corrections.length} corrections`);
         showTooltip(el, resp.corrections);
       }
     } catch (_) {
@@ -323,15 +353,14 @@
     if (!text.trim()) { removeEdgeOverlay(el); return; }
 
     try {
-      const resp = await browser.runtime.sendMessage({
-        action: "edge_analyze",
-        text,
-      });
+      const resp = await browser.runtime.sendMessage({ action: "edge_analyze", text });
+      const n = resp?.sentences?.length ?? 0;
+      console.log(`[WaldoSpells][edge] ${text.length}ch → ${n} flagged`);
       if (resp && Array.isArray(resp.sentences)) {
         syncOverlay(el, resp.sentences);
       }
-    } catch (_) {
-      // Edge worker unavailable — silent fail, degraded gracefully
+    } catch (err) {
+      console.error(`[WaldoSpells][edge] ✗`, err.message);
     }
   }
 
@@ -374,8 +403,10 @@
         context_hint: getContextHint(el),
       });
       if (resp) {
-        // Update cached availability
         _smartAvailable = resp.available ?? true;
+        const nc = (resp.corrections ?? []).length;
+        const status = resp.available ? `${nc} corrections` : `unavailable`;
+        console.log(`[WaldoSpells][smart] ${paragraph.length}ch → ${status}`);
         showSmartBadge(el, resp);
       }
     } catch (_) {
@@ -453,9 +484,10 @@
   }
 
   function attachAll() {
-    document.querySelectorAll(
-      'textarea, input[type="text"], input:not([type])',
-    ).forEach(attach);
+    const els = document.querySelectorAll('textarea, input[type="text"], input:not([type])');
+    const before = [...els].filter(e => !e._waldoAttached).length;
+    els.forEach(attach);
+    if (before > 0) console.log(`[WaldoSpells] attached to ${before} new input(s)`);
   }
 
   attachAll();

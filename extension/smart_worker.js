@@ -7,26 +7,15 @@
 // Exported functions:
 //   analyzeSmart(text, contextHint?)  → { corrections, available, message?, error? }
 //   checkSmartStatus()                → { available, hardware_ok, server_ok, message }
+//   getCachedSmartStatus()            → last cached status or null
 
 const SMART_URL        = "http://127.0.0.1:8765/smart";
 const SMART_STATUS_URL = "http://127.0.0.1:8765/smart_status";
 
-// Cache the last status so the popup can display it without an extra round-trip.
-// Refreshed on every analyzeSmart() call and every checkSmartStatus() call.
 let _lastStatus = null;
 
 /**
  * Analyze a paragraph through the Smart tier (Qwen2.5-3B-Instruct).
- *
- * @param {string} text        — paragraph text to analyze
- * @param {string} [contextHint] — optional site/field hint ("github", "general", …)
- * @returns {Promise<{
- *   corrections: Array,
- *   available: boolean,
- *   message?: string,
- *   error?: string,
- *   latency_ms?: number
- * }>}
  *
  * Degradation contract (mirrors wrapper/server.py _handle_smart):
  *   - hardware gate fails   → { available: false, corrections: [], message: "Smart tier requires more RAM" }
@@ -41,18 +30,26 @@ export async function analyzeSmart(text, contextHint) {
       body: JSON.stringify({ text, context_hint: contextHint ?? null }),
     });
     if (!resp.ok) {
+      console.warn(`[WaldoSpells][smart] ✗ http_${resp.status}`);
       return { corrections: [], available: false, error: `http_${resp.status}` };
     }
     const data = await resp.json();
-    // Cache availability so the popup badge can reflect it without an extra call.
+    const available = data.available ?? true;
+    const nc = (data.corrections ?? []).length;
+    if (available) {
+      console.log(`[WaldoSpells][smart] ← ${nc} corrections`);
+    } else {
+      console.warn(`[WaldoSpells][smart] ← unavailable | ${data.message ?? ""}`);
+    }
     _lastStatus = {
-      available:   data.available ?? true,
-      hardware_ok: data.available ?? true,  // best-effort inferred
-      server_ok:   data.available ?? true,
-      message:     data.message ?? (data.available ? "Smart tier ready" : "Smart tier offline"),
+      available,
+      hardware_ok: available,
+      server_ok:   available,
+      message:     data.message ?? (available ? "Smart tier ready" : "Smart tier offline"),
     };
     return data;
   } catch (_) {
+    console.warn(`[WaldoSpells][smart] ✗ server_unreachable`);
     _lastStatus = {
       available:   false,
       hardware_ok: false,
@@ -66,22 +63,23 @@ export async function analyzeSmart(text, contextHint) {
 /**
  * Query wrapper /smart_status without sending text.
  * Use this on popup open to show current availability without triggering analysis.
- *
- * @returns {Promise<{ available: boolean, hardware_ok: boolean, server_ok: boolean, message: string }>}
  */
 export async function checkSmartStatus() {
   try {
     const resp = await fetch(SMART_STATUS_URL);
     if (!resp.ok) {
+      console.warn(`[WaldoSpells][smart] status ✗ http_${resp.status}`);
       const fallback = { available: false, hardware_ok: false, server_ok: false,
                          message: "Smart tier — status check failed" };
       _lastStatus = fallback;
       return fallback;
     }
     const data = await resp.json();
+    console.log(`[WaldoSpells][smart] status: available=${data.available} hw=${data.hardware_ok} srv=${data.server_ok}`);
     _lastStatus = data;
     return data;
   } catch (_) {
+    console.warn(`[WaldoSpells][smart] status ✗ server_unreachable`);
     const fallback = { available: false, hardware_ok: false, server_ok: false,
                        message: "Smart tier — server unreachable" };
     _lastStatus = fallback;
