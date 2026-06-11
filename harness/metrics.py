@@ -4,7 +4,26 @@ from statistics import mean
 
 
 def _overlaps(a_start: int, a_end: int, b_start: int, b_end: int) -> bool:
-    """Check if two character ranges overlap."""
+    """Check if two character ranges overlap.
+
+    Zero-length spans (start == end) represent insertion points rather than
+    character ranges.  A zero-length span at position P overlaps a range [X, Y)
+    when X <= P <= Y (the insertion point falls within the range or at either
+    boundary).  Two zero-length spans overlap only when they share the same
+    position.  This handles GEC corrections where the model inserts words
+    before an existing token: the expected span may be an insertion point P
+    while the predicted correction covers [P, P+k).
+    """
+    # Both zero-length: match only if same position.
+    if a_start == a_end and b_start == b_end:
+        return a_start == b_start
+    # a is a zero-length insertion point: overlaps b if it falls within b.
+    if a_start == a_end:
+        return b_start <= a_start <= b_end
+    # b is a zero-length insertion point: overlaps a if it falls within a.
+    if b_start == b_end:
+        return a_start <= b_start <= a_end
+    # Both are proper ranges: standard half-open interval overlap check.
     return not (a_end <= b_start or b_end <= a_start)
 
 

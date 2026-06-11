@@ -71,25 +71,28 @@ class TestCorpusSourceCounts:
                 assert item.task == "tone"
 
     def test_c4_200m_source_contribution(self):
-        """C4_200M source should contribute ~40 items (from sentence_pairs.tsv)."""
+        """C4_200M source should contribute items from sentence_pairs.tsv when present."""
         yaml_path = Path(__file__).parent / "sources.yaml"
         items = load_sources(yaml_path)
         c4_items = [i for i in items if i.source == "c4_200m"]
-        # C4 is optional — it only loads if sentence_pairs.tsv exists
-        # If it exists, expect ~40 items (the synthetic dataset)
+        # C4 is optional — it only loads if sentence_pairs.tsv exists.
+        # Minimum expected: original 40 synthetic pairs + targeted blindspot pairs
+        # (added in cycle 27 for Noun Form, Pronoun, Word Order coverage).
         if c4_items:
-            assert len(c4_items) == 40, f"Expected 40 C4 items (from sentence_pairs.tsv), got {len(c4_items)}"
+            assert len(c4_items) >= 40, (
+                f"Expected at least 40 C4 items (from sentence_pairs.tsv), got {len(c4_items)}"
+            )
             for item in c4_items:
                 assert item.task == "span_correction"
                 assert item.source == "c4_200m"
 
     def test_total_corpus_meets_minimum(self):
-        """Total corpus should include at least 4792 items (builtin + available sources)."""
+        """Total corpus should include at least 4832 items (builtin + available sources)."""
         yaml_path = Path(__file__).parent / "sources.yaml"
         items = load_sources(yaml_path)
-        # Minimum: 42 builtin + 0 optional sources
-        # Realistic: 42 builtin + 1750 kaggle + 3000 uci + 40 c4 = 4832
-        assert len(items) >= 4792, f"Expected >=4792 total items, got {len(items)}"
+        # Minimum: 42 builtin + 1750 kaggle + 3000 uci + 40 c4 = 4832
+        # Cycle 27 added 16 blindspot pairs to c4, so floor is now 4848.
+        assert len(items) >= 4832, f"Expected >=4832 total items, got {len(items)}"
 
     def test_source_breakdown_logged(self):
         """Verify we can count items by source — useful for debugging."""

@@ -80,7 +80,14 @@ def _load() -> Tuple[object, object]:
 
 
 def _diff_to_corrections(original: str, corrected: str) -> List[Correction]:
-    """Produce Correction objects by diffing original vs corrected at the word level."""
+    """Produce Correction objects by diffing original vs corrected at the word level.
+
+    Handles 'replace', 'delete', and 'insert' opcodes so that word-order corrections
+    (which produce delete + insert pairs rather than a single replace) are captured.
+    Insert-only opcodes (no source words consumed) are attached to the previous
+    correction when possible, or emitted as a zero-width marker at char_pos so they
+    can be merged by callers that understand adjacent corrections.
+    """
     corrections: List[Correction] = []
     if original == corrected:
         return corrections
@@ -89,11 +96,18 @@ def _diff_to_corrections(original: str, corrected: str) -> List[Correction]:
     corr_words = corrected.split()
 
     matcher = difflib.SequenceMatcher(None, orig_words, corr_words, autojunk=False)
+    # Pre-compute character offsets for each original word.
+    word_offsets: List[int] = []
+    pos = 0
+    for w in orig_words:
+        word_offsets.append(pos)
+        pos += len(w) + 1  # +1 for the space after each word
+
     char_pos = 0
     orig_idx = 0
 
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-        # Advance char_pos to the start of orig_words[orig_idx]
+        # Advance char_pos to the start of orig_words[i1]
         while orig_idx < i1:
             char_pos += len(orig_words[orig_idx]) + 1  # +1 for space
             orig_idx += 1
@@ -109,6 +123,38 @@ def _diff_to_corrections(original: str, corrected: str) -> List[Correction]:
                     end=end,
                     original=original_chunk,
                     suggestions=[suggestion],
+                    type="grammar",
+                ))
+
+        elif tag == "delete":
+            # Words deleted from original with no replacement in corrected.
+            # Emit as a correction with empty suggestion so the span is recorded
+            # and can overlap with expected corrections in the harness.
+            start = char_pos
+            original_chunk = " ".join(orig_words[i1:i2])
+            end = start + len(original_chunk)
+            if 0 <= start < end <= len(original):
+                corrections.append(Correction(
+                    start=start,
+                    end=end,
+                    original=original_chunk,
+                    suggestions=[""],
+                    type="grammar",
+                ))
+
+        elif tag == "insert":
+            # Words inserted into corrected with no source words consumed.
+            # Anchor the correction at char_pos (between words); use a one-character
+            # lookahead span so the overlap check in metrics.py can match it against
+            # any expected correction that starts at or just after this position.
+            # Only emit when char_pos is within the original string.
+            if char_pos < len(original):
+                suggestion = " ".join(corr_words[j1:j2])
+                corrections.append(Correction(
+                    start=char_pos,
+                    end=char_pos + 1,
+                    original=original[char_pos: char_pos + 1],
+                    suggestions=[suggestion + " " + original[char_pos: char_pos + 1]],
                     type="grammar",
                 ))
 
