@@ -85,7 +85,7 @@ research/     Model research notes and T5/GGUF investigation reports
 
 ## Test Results
 
-Test suite: **170 passing** (33 skipped, 0 failed)
+Test suite: **195 passing** (19 skipped, 0 failed)
 
 Run with:
 ```bash
