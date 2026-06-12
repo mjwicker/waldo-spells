@@ -134,7 +134,8 @@ def write_summary(results, path: Path, run_id: str) -> None:
 
         stats = latency_stats(results)
         f.write("## Overall Metrics\n\n")
-        f.write(f"- Total runs: {len(results)}\n")
+        available_runs = sum(1 for r in results if r.available)
+        f.write(f"- Total runs: {available_runs}\n")
         f.write(
             f"- Latency (ms): p50={stats['p50']:.2f}, p95={stats['p95']:.2f}, "
             f"p99={stats['p99']:.2f}, mean={stats['mean']:.2f}\n"
