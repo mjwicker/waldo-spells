@@ -26,27 +26,10 @@ let _transformers = null;
 async function loadTransformers() {
   if (_transformers) return _transformers;
 
-  // ── Diagnostic pre-flight ─────────────────────────────────────────────────
-  console.log("[WaldoSpells][edge] SAB:", typeof SharedArrayBuffer);
-  console.log("[WaldoSpells][edge] wasmPaths:", ort.env.wasm.wasmPaths);
-
-  // Can we reach the WASM binary?
-  try {
-    const r = await fetch(ort.env.wasm.wasmPaths + "ort-wasm-simd.wasm", { method: "HEAD" });
-    console.log("[WaldoSpells][edge] wasm HEAD:", r.ok, r.status, r.headers.get("content-type"));
-  } catch (e) { console.error("[WaldoSpells][edge] wasm HEAD failed:", e); }
-
-  // Can we reach the model config?
-  const modelBase = self.location.origin + "/models/textattack/bert-base-uncased-CoLA/";
-  try {
-    const r = await fetch(modelBase + "config.json");
-    console.log("[WaldoSpells][edge] config.json:", r.ok, r.status);
-  } catch (e) { console.error("[WaldoSpells][edge] config.json failed:", e); }
-
   // ── Load Transformers.js ──────────────────────────────────────────────────
   console.log("[WaldoSpells][edge] importing transformers.js…");
   const tj = await import("./vendor/transformers.web.min.js");
-  console.log("[WaldoSpells][edge] transformers.js loaded, env keys:", Object.keys(tj.env).join(", "));
+  console.log("[WaldoSpells][edge] transformers.js loaded");
 
   tj.env.localModelPath    = self.location.origin + "/models/";
   tj.env.allowLocalModels  = true;
@@ -112,15 +95,24 @@ export async function analyzeEdge(text) {
   const sentences = splitSentences(text);
   if (!sentences.length) return [];
 
+  const ts_worker_start = Date.now();
   const results = await pipe(sentences, { topk: 1 });
+  const ts_worker_end = Date.now();
+
   const normalised = sentences.length === 1 ? [results] : results;
 
-  return normalised
+  const output = normalised
     .map((result, i) => {
       const top = Array.isArray(result) ? result[0] : result;
       return { sentence: sentences[i], label: top.label, score: top.score };
     })
     .filter((r) => r.label === "UNACCEPTABLE" && r.score >= 0.65);
+
+  // Attach timing metadata (not sent to content script, used for diagnostics in background)
+  output._ts_worker_start = ts_worker_start;
+  output._ts_worker_end = ts_worker_end;
+
+  return output;
 }
 
 export function warmUp() {

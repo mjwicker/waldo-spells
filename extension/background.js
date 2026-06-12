@@ -83,19 +83,26 @@ async function handleSmartAnalyze({ text, context_hint }) {
 
 // ── Edge tier — in-extension CoLA BERT ONNX ──────────────────────────────────
 
-async function handleEdgeAnalyze({ text }) {
+async function handleEdgeAnalyze({ text, ts_content_send }) {
+  const ts_bg_receive = Date.now();
   const { enabled = true } = await browser.storage.local.get("enabled");
-  if (!enabled) return { sentences: [] };
+  if (!enabled) return { sentences: [], ts_content_send };
 
   console.log(`[WaldoSpells][edge] → ${text.length}ch`);
 
   try {
     const flagged = await analyzeEdge(text);
-    console.log(`[WaldoSpells][edge] ← ${flagged.length} flagged`);
-    return { sentences: flagged };
+    const ts_bg_reply = Date.now();
+    const latency_bg_to_worker = flagged._ts_worker_end && flagged._ts_worker_start
+      ? flagged._ts_worker_end - flagged._ts_worker_start
+      : null;
+    const latency_to_bg = ts_bg_receive - (ts_content_send ?? 0);
+    const latency_from_bg = ts_bg_reply - ts_bg_receive;
+    console.log(`[WaldoSpells][edge] ← ${flagged.length} flagged (to_bg=${latency_to_bg}ms, worker=${latency_bg_to_worker}ms, from_bg=${latency_from_bg}ms)`);
+    return { sentences: flagged, ts_content_send };
   } catch (err) {
     console.error(`[WaldoSpells][edge] ✗`, String(err));
-    return { sentences: [], error: String(err) };
+    return { sentences: [], error: String(err), ts_content_send };
   }
 }
 

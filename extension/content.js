@@ -1,6 +1,6 @@
 (() => {
   const DEBOUNCE_MS       = 600;
-  const EDGE_DEBOUNCE_MS  = 1200; // longer — model load can be slow on first call
+  const EDGE_DEBOUNCE_MS  = 600;  // reduced — warmUp() ensures pipeline is hot on first keypress
   const SMART_DEBOUNCE_MS = 800;  // per-paragraph; fires after double-newline only
 
   // WeakMap keeps tooltip refs without preventing GC of removed inputs
@@ -353,9 +353,11 @@
     if (!text.trim()) { removeEdgeOverlay(el); return; }
 
     try {
-      const resp = await browser.runtime.sendMessage({ action: "edge_analyze", text });
+      const ts_content_send = Date.now();
+      const resp = await browser.runtime.sendMessage({ action: "edge_analyze", text, ts_content_send });
       const n = resp?.sentences?.length ?? 0;
-      console.log(`[WaldoSpells][edge] ${text.length}ch → ${n} flagged`);
+      const latency_total = resp?.ts_content_send ? Date.now() - resp.ts_content_send : null;
+      console.log(`[WaldoSpells][edge] ${text.length}ch → ${n} flagged${latency_total ? ` (${latency_total}ms)` : ""}`);
       if (resp && Array.isArray(resp.sentences)) {
         syncOverlay(el, resp.sentences);
       }
