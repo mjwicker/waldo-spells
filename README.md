@@ -85,7 +85,7 @@ research/     Model research notes and T5/GGUF investigation reports
 
 ## Test Results
 
-Test suite: **227 passing** (19 skipped, 0 failed)
+Test suite: **237 passing** (227 Python + 10 JavaScript, 19 skipped, 0 failed)
 
 Run with:
 ```bash

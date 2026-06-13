@@ -416,6 +416,159 @@
     }
   }
 
+  // ── Context menu fix suggestions ──────────────────────────────────────────
+  //
+  // When the user right-clicks an orange squiggle we:
+  //   1. Record the active span (its sentence text + reason) on mousedown so
+  //      the context menu handler in background.js has the data it needs.
+  //   2. Show a floating suggestion panel (injected DOM) near the click point
+  //      when background.js relays suggestions back.
+  //
+  // We use mousedown (not contextmenu) for the record step because contextmenu
+  // fires AFTER the browser processes the event, and Firefox MV3 requires the
+  // data to already be in storage before the context menu item is shown.
+
+  let _activeSquiggle = null; // { sentence, reason, el (parent textarea/input) }
+
+  function removeSuggestionPanel() {
+    const existing = document.getElementById("waldo-ctx-panel");
+    if (existing) existing.remove();
+  }
+
+  function showSuggestionPanel(sentence, explanation, suggestions, anchorEl) {
+    removeSuggestionPanel();
+
+    const panel = document.createElement("div");
+    panel.id = "waldo-ctx-panel";
+    panel.setAttribute("data-waldo-ctx", "1");
+    panel.style.cssText = [
+      "position:fixed",
+      "z-index:2147483647",
+      "background:#1a1a2e",
+      "color:#e0e0e0",
+      "border:1px solid #f97316",
+      "border-radius:7px",
+      "padding:10px 14px",
+      "font:13px/1.5 system-ui,sans-serif",
+      "max-width:380px",
+      "box-shadow:0 4px 18px rgba(0,0,0,.6)",
+      "pointer-events:auto",
+    ].join(";");
+
+    // Header row
+    const header = document.createElement("div");
+    header.style.cssText = "display:flex;justify-content:space-between;align-items:center;margin-bottom:6px";
+    const title = document.createElement("span");
+    title.style.cssText = "color:#f97316;font-weight:700;font-size:12px;letter-spacing:.04em";
+    title.textContent = "WALDO FIX SUGGESTION";
+    const closeBtn = document.createElement("button");
+    closeBtn.textContent = "✕";
+    closeBtn.style.cssText = [
+      "background:none",
+      "border:none",
+      "color:#9ca3af",
+      "cursor:pointer",
+      "font-size:14px",
+      "padding:0 0 0 8px",
+      "line-height:1",
+    ].join(";");
+    closeBtn.addEventListener("click", removeSuggestionPanel);
+    header.append(title, closeBtn);
+    panel.appendChild(header);
+
+    // Explanation
+    if (explanation) {
+      const expDiv = document.createElement("div");
+      expDiv.style.cssText = "color:#d1d5db;margin-bottom:8px;font-size:12px";
+      expDiv.textContent = explanation;  // server text — textContent only
+      panel.appendChild(expDiv);
+    }
+
+    // Original sentence (truncated)
+    const origDiv = document.createElement("div");
+    origDiv.style.cssText = "margin-bottom:6px";
+    const origLabel = document.createElement("span");
+    origLabel.style.cssText = "color:#9ca3af;font-size:11px";
+    origLabel.textContent = "Flagged: ";
+    const origText = document.createElement("span");
+    origText.style.cssText = "color:#f9a8d4;font-weight:600";
+    origText.textContent = sentence.length > 80 ? sentence.slice(0, 77) + "…" : sentence;
+    origDiv.append(origLabel, origText);
+    panel.appendChild(origDiv);
+
+    // Suggestions
+    if (suggestions && suggestions.length) {
+      const sugLabel = document.createElement("div");
+      sugLabel.style.cssText = "color:#9ca3af;font-size:11px;margin-bottom:3px";
+      sugLabel.textContent = suggestions.length === 1 ? "Suggestion:" : "Suggestions:";
+      panel.appendChild(sugLabel);
+
+      for (const sug of suggestions.slice(0, 2)) {
+        const sugDiv = document.createElement("div");
+        sugDiv.style.cssText = [
+          "background:#0f172a",
+          "border:1px solid #334155",
+          "border-radius:4px",
+          "padding:4px 8px",
+          "margin-bottom:4px",
+          "color:#a5f3fc",
+          "font-size:12px",
+          "cursor:pointer",
+        ].join(";");
+        sugDiv.textContent = sug;  // server text — textContent only
+        // Click-to-copy on suggestion
+        sugDiv.title = "Click to copy";
+        sugDiv.addEventListener("click", () => {
+          navigator.clipboard.writeText(sug).catch(() => {});
+          sugDiv.style.background = "#1e3a4c";
+          setTimeout(() => { sugDiv.style.background = "#0f172a"; }, 600);
+        });
+        panel.appendChild(sugDiv);
+      }
+    } else {
+      const noSug = document.createElement("div");
+      noSug.style.cssText = "color:#6b7280;font-size:12px;font-style:italic";
+      noSug.textContent = "No specific rewrite available — see explanation above.";
+      panel.appendChild(noSug);
+    }
+
+    document.body.appendChild(panel);
+
+    // Position near the anchor element, clamped to viewport
+    const rect = anchorEl ? anchorEl.getBoundingClientRect() : { bottom: 80, left: 80 };
+    const vw = document.documentElement.clientWidth;
+    const vh = document.documentElement.clientHeight;
+    const panelW = 380;
+    const panelH = 200; // rough estimate before layout
+    let top  = rect.bottom + 6;
+    let left = rect.left;
+    if (left + panelW > vw) left = vw - panelW - 8;
+    if (left < 4) left = 4;
+    if (top + panelH > vh) top = (rect.top || 80) - panelH - 6;
+    panel.style.top  = `${Math.max(4, top)}px`;
+    panel.style.left = `${Math.max(4, left)}px`;
+
+    // Auto-dismiss after 20 s
+    setTimeout(removeSuggestionPanel, 20000);
+  }
+
+  // Record the active squiggle span on mousedown (before context menu fires)
+  document.addEventListener("mousedown", (e) => {
+    const span = e.target.closest(".waldo-edge-flag");
+    if (span) {
+      _activeSquiggle = {
+        sentence: span.textContent,
+        reason:   span.getAttribute("data-waldo-reason") ?? "",
+        anchorEl: span,
+      };
+      // Persist for background.js to read via runtime message
+      browser.storage.local.set({ waldo_ctx_squiggle: _activeSquiggle.sentence });
+    } else {
+      _activeSquiggle = null;
+      browser.storage.local.remove("waldo_ctx_squiggle");
+    }
+  }, true);
+
   // ── Event handlers ────────────────────────────────────────────────────────
 
   function onInput(e) {
@@ -462,6 +615,13 @@
   // We listen here and call analyzeSmartEl on the currently-focused element.
 
   browser.runtime.onMessage.addListener((msg) => {
+    if (msg.action === "suggest_fix") {
+      // Background relays context-menu fix suggestions back to the page
+      const { sentence, explanation, suggestions } = msg;
+      const anchorEl = _activeSquiggle?.anchorEl ?? document.activeElement;
+      showSuggestionPanel(sentence, explanation, suggestions, anchorEl);
+      return;
+    }
     if (msg.action !== "smart_demand") return;
     const el = document.activeElement;
     if (

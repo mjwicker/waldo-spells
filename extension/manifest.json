@@ -3,7 +3,7 @@
   "name": "Waldo Spells",
   "version": "0.4.0",
   "description": "Context-aware local spelling and word-choice checker. Runs entirely on your machine.",
-  "permissions": ["storage"],
+  "permissions": ["storage", "contextMenus"],
   "host_permissions": [
     "http://127.0.0.1:8765/*",
     "https://huggingface.co/*",
