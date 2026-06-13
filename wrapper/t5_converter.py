@@ -1,7 +1,16 @@
-"""One-time conversion of Unbabel/gec-t5_small from HuggingFace to CTranslate2 INT8 format.
+"""One-time conversion of T5 grammar-correction models from HuggingFace to CTranslate2 format.
 
 Usage:
+    # Convert default model (Unbabel/gec-t5_small) to INT8:
     python -m wrapper.t5_converter --output ./models/gec-t5_small-ct2
+
+    # Convert a custom model to INT8:
+    python -m wrapper.t5_converter --model vennify/t5-base-grammar-correction \
+        --output ./models/gec-t5-base-ct2
+
+    # Convert with different quantization (default: int8):
+    python -m wrapper.t5_converter --model prithivida/grammar_error_correcter_v1 \
+        --output ./models/gec-t5-prithivida-ct2 --quantization int8_float16
 
 This shells out to ct2-transformers-converter (installed with ctranslate2).
 Output directory is skipped if it already contains model.bin.

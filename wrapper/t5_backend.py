@@ -1,21 +1,27 @@
-"""Mid/Better tier: Unbabel/gec-t5_small via CTranslate2 (CPU INT8).
+"""Mid/Better tier: T5-based GEC models via CTranslate2 (CPU INT8).
+
+This backend supports any T5-based grammar-correction model converted to CTranslate2 format.
+Default: Unbabel/gec-t5_small. Can be overridden for research/evaluation.
 
 Setup:
   1. Install dependencies:
        pip install ctranslate2 transformers sentencepiece
-  2. Convert model (one-time, ~120 MB output):
+  2. Convert model (one-time, ~120–250 MB output depending on model size):
        python -m wrapper.t5_converter --output ./models/gec-t5_small-ct2
-     Or manually:
-       ct2-transformers-converter --model Unbabel/gec-t5_small \
-           --output_dir ./models/gec-t5_small-ct2 --quantization int8
-  3. Set env var:
+     Or for a custom model:
+       python -m wrapper.t5_converter --model vennify/t5-base-grammar-correction \
+           --output ./models/gec-t5-base-ct2 --quantization int8
+  3. Set env vars:
        export CT2_MODEL_PATH=/absolute/path/to/models/gec-t5_small-ct2
+       export CT2_TOKENIZER_ID=t5-small  # optional; defaults to t5-small
 
 Environment variables:
-  CT2_MODEL_PATH  — path to converted CTranslate2 model directory (required)
+  CT2_MODEL_PATH       — path to converted CTranslate2 model directory (required)
+  CT2_TOKENIZER_ID     — HuggingFace T5 tokenizer ID (default: t5-small)
 
-Expected latency on Pentium N6000 (CPU-only): 6–10 seconds per sentence.
-Expected RAM: ~120–150 MB resident.
+Expected latency on Pentium N6000 (CPU-only): 6–10 seconds per sentence (t5-small).
+Expected RAM: ~120–150 MB resident (t5-small).
+Larger models (t5-base) may require 300–500ms p50 latency and 250–350 MB RAM.
 """
 
 import difflib
@@ -30,9 +36,11 @@ logger = logging.getLogger(__name__)
 _INSTALL_HINT = (
     "T5 backend unavailable.\n"
     "Install:  pip install ctranslate2 transformers sentencepiece\n"
-    "Convert:  ct2-transformers-converter --model Unbabel/gec-t5_small "
+    "Convert:  python -m wrapper.t5_converter --output ./models/gec-t5_small-ct2\n"
+    "          Or: ct2-transformers-converter --model Unbabel/gec-t5_small "
     "--output_dir ./models/gec-t5_small-ct2 --quantization int8\n"
-    "Activate: export CT2_MODEL_PATH=/path/to/models/gec-t5_small-ct2"
+    "Activate: export CT2_MODEL_PATH=/path/to/models/gec-t5_small-ct2\n"
+    "Optional: export CT2_TOKENIZER_ID=t5-small (default: t5-small)"
 )
 
 # Lazy-loaded singletons; initialised on first correct() call.
@@ -66,16 +74,27 @@ def is_available() -> bool:
     return True
 
 
+def _ct2_tokenizer_id() -> str:
+    """Get tokenizer ID from environment or use default t5-small."""
+    return os.environ.get("CT2_TOKENIZER_ID", "t5-small")
+
+
 def _load() -> Tuple[object, object]:
-    """Lazy-load translator and tokenizer; cache as module-level singletons."""
+    """Lazy-load translator and tokenizer; cache as module-level singletons.
+
+    Tokenizer model ID is read from CT2_TOKENIZER_ID env var (default: t5-small).
+    This allows research evaluation of larger T5 variants with custom models.
+    """
     global _translator, _tokenizer
     if _translator is None:
         import ctranslate2
         from transformers import T5Tokenizer
         model_path = _ct2_model_path()
+        tokenizer_id = _ct2_tokenizer_id()
         logger.info("Loading CTranslate2 T5 model from %s", model_path)
+        logger.info("Loading T5 tokenizer from %s", tokenizer_id)
         _translator = ctranslate2.Translator(model_path, device="cpu", compute_type="int8")
-        _tokenizer = T5Tokenizer.from_pretrained("t5-small")
+        _tokenizer = T5Tokenizer.from_pretrained(tokenizer_id)
     return _translator, _tokenizer
 
 
