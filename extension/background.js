@@ -39,53 +39,39 @@ browser.contextMenus.onClicked.addListener(async (info, tab) => {
   if (info.menuItemId !== "waldo-fix-suggestion") return;
   if (!tab?.id) return;
 
-  // Retrieve the sentence stored by the content script mousedown handler
-  const stored = await browser.storage.local.get("waldo_ctx_squiggle");
-  const sentence = stored.waldo_ctx_squiggle;
-  if (!sentence) {
-    // No squiggle was active — ignore
+  // Read corrections stored by the right-click mousedown handler in content.js.
+  // waldo_ctx_data = JSON { text, corrections: [{original, suggestions[]}] }
+  const stored = await browser.storage.local.get("waldo_ctx_data");
+  let ctxData = null;
+  try { ctxData = stored.waldo_ctx_data ? JSON.parse(stored.waldo_ctx_data) : null; } catch (_) {}
+
+  if (!ctxData || !ctxData.corrections?.length) {
+    console.log("[WaldoSpells][ctx-menu] no active corrections to show");
     return;
   }
 
-  console.log(`[WaldoSpells][ctx-menu] requesting fix for: ${sentence.slice(0, 60)}…`);
+  console.log(`[WaldoSpells][ctx-menu] ${ctxData.corrections.length} correction(s) cached`);
 
+  // Use cached Fast-tier corrections directly — no LLM round-trip needed.
+  // If Smart tier is available, enrich with explanation for the first item.
   let explanation = "";
-  let suggestions = [];
+  const corrections = ctxData.corrections;
 
   try {
-    // Prefer Smart tier for richer suggestions; fall back to Fast tier.
-    const smartResult = await analyzeSmart(sentence, "context_menu");
+    const smartResult = await analyzeSmart(ctxData.text, "context_menu");
     if (smartResult.available && (smartResult.corrections ?? []).length > 0) {
-      const first = smartResult.corrections[0];
-      explanation = first.explanation ?? "";
-      suggestions = first.suggestions ?? [];
-    } else {
-      // Fast tier fallback via the local server
-      const resp = await fetch(ANALYZE_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: sentence, tier: "fast", context_hint: "context_menu" }),
-      });
-      if (resp.ok) {
-        const data = await resp.json();
-        const corrections = data.corrections ?? [];
-        if (corrections.length > 0) {
-          explanation = corrections[0].explanation ?? "";
-          suggestions = corrections[0].suggestions ?? [];
-        }
-      }
+      explanation = smartResult.corrections[0].explanation ?? "";
     }
-  } catch (err) {
-    console.warn(`[WaldoSpells][ctx-menu] ✗ suggestion fetch failed:`, String(err));
-    explanation = "Could not reach the local Waldo server. Make sure the wrapper is running.";
+  } catch (_) {
+    // Smart tier unavailable — proceed with Fast-tier suggestions only
   }
 
-  // Relay suggestions back to the content script to render the panel
   browser.tabs.sendMessage(tab.id, {
     action: "suggest_fix",
-    sentence,
+    sentence:    ctxData.text,
     explanation,
-    suggestions,
+    corrections, // full list: [{original, suggestions[]}]
+    suggestions: corrections[0]?.suggestions ?? [],
   }).catch((err) => {
     console.warn(`[WaldoSpells][ctx-menu] ✗ could not relay to tab:`, String(err));
   });

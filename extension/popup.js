@@ -1,15 +1,33 @@
-const toggle       = document.getElementById("toggle");
-const serverStatus = document.getElementById("server-status");
-const smartStatus  = document.getElementById("smart-status");
-const smartBtn     = document.getElementById("smart-btn");
+const toggle                  = document.getElementById("toggle");
+const browserSpellcheckToggle = document.getElementById("browser-spellcheck-toggle");
+const serverStatus            = document.getElementById("server-status");
+const smartStatus             = document.getElementById("smart-status");
+const smartBtn                = document.getElementById("smart-btn");
 
-// Restore saved toggle state
-browser.storage.local.get("enabled").then(({ enabled = true }) => {
-  toggle.checked = enabled;
+// Restore saved toggle states
+browser.storage.local.get(["enabled", "suppressBrowserSpellcheck"]).then((stored) => {
+  toggle.checked = stored.enabled !== false;
+  // suppressBrowserSpellcheck defaults ON (browser checker hidden when Waldo is active)
+  const suppress = stored.suppressBrowserSpellcheck !== false;
+  browserSpellcheckToggle.checked = !suppress; // toggle shows "browser spellcheck ON/OFF"
 });
 
 toggle.addEventListener("change", () => {
   browser.storage.local.set({ enabled: toggle.checked });
+});
+
+// "Browser spellcheck" toggle: checked = browser checker visible, unchecked = hidden
+browserSpellcheckToggle.addEventListener("change", () => {
+  const suppress = !browserSpellcheckToggle.checked;
+  browser.storage.local.set({ suppressBrowserSpellcheck: suppress });
+  // Notify all content scripts in the active tab to apply immediately
+  browser.tabs.query({ active: true, currentWindow: true }).then((tabs) => {
+    if (!tabs.length) return;
+    browser.tabs.sendMessage(tabs[0].id, {
+      action: "set_browser_spellcheck",
+      suppress,
+    }).catch(() => {});
+  });
 });
 
 // Check server health on open
