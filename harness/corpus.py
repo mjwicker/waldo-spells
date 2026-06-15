@@ -4,7 +4,7 @@ import json
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Literal, Optional
+from typing import List, Optional
 
 # Ensure harness dir is on path so source adapters can do `from corpus import CorpusItem`
 _HARNESS_DIR = Path(__file__).parent
@@ -52,6 +52,7 @@ class CorpusItem:
             "expected_label": self.expected_label,
             "error_type": self.error_type,
             "source": self.source,
+            "skip_tiers": self.skip_tiers,
         }
 
 
