@@ -17,7 +17,6 @@ Environment variables:
 
 import atexit
 import json
-import logging
 import os
 import re
 import shutil
@@ -27,9 +26,10 @@ from typing import List, Optional
 
 import requests
 
+from logging_utils import WaldoSpellsLogger
 from protocol import Correction
 
-logger = logging.getLogger(__name__)
+logger = WaldoSpellsLogger("llama_backend")
 
 _server_process: Optional[subprocess.Popen] = None
 
@@ -61,11 +61,17 @@ def is_available() -> bool:
     model = _model_path()
     if not model:
         path_val = os.environ.get("LLAMA_MODEL_PATH", "(not set)")
-        print(f"[llama_backend] unavailable: LLAMA_MODEL_PATH={path_val} not found or unreadable", flush=True)
+        print(
+            f"[llama_backend] unavailable: LLAMA_MODEL_PATH={path_val} not found or unreadable",
+            flush=True,
+        )
         return False
     binary = _server_bin()
     if not binary:
-        print("[llama_backend] unavailable: llama-server binary not found in PATH or LLAMA_SERVER_BIN", flush=True)
+        print(
+            "[llama_backend] unavailable: llama-server binary not found in PATH or LLAMA_SERVER_BIN",
+            flush=True,
+        )
         return False
     return True
 
@@ -83,13 +89,18 @@ def _start_server() -> None:
 
     cmd = [
         binary,
-        "-m", model,
-        "--host", host,
-        "--port", str(port),
-        "-c", "2048",
-        "--n-gpu-layers", "0",
+        "-m",
+        model,
+        "--host",
+        host,
+        "--port",
+        str(port),
+        "-c",
+        "2048",
+        "--n-gpu-layers",
+        "0",
     ]
-    logger.info("Starting llama-server: %s", " ".join(cmd))
+    logger.info(f"Starting llama-server: {' '.join(str(c) for c in cmd if c)}")
     _server_process = subprocess.Popen(
         cmd,
         stdout=subprocess.DEVNULL,
@@ -106,7 +117,7 @@ def _start_server() -> None:
             if r.status_code == 200:
                 return
         except requests.exceptions.RequestException:
-            pass
+            logger.error("llama-server health poll failed; retrying", exc_info=True)
         if _server_process.poll() is not None:
             raise RuntimeError("llama-server exited unexpectedly during startup")
         time.sleep(1)
@@ -204,7 +215,9 @@ def _parse_json_with_repair(raw: str) -> dict:
         candidate = re.sub(r"\}(\}+)\]", "}]", candidate)
         try:
             result = json.loads(candidate)
-            logger.debug("[llama_backend] JSON repaired via pass 5 (truncated at last })")
+            logger.debug(
+                "[llama_backend] JSON repaired via pass 5 (truncated at last })"
+            )
             return result
         except json.JSONDecodeError:
             pass
@@ -257,10 +270,10 @@ def correct(text: str, context_hint: Optional[str] = None) -> List[Correction]:
         resp.raise_for_status()
     except requests.exceptions.Timeout:
         _stop_server()
-        logger.error("llama-server timed out after 120s")
+        logger.error("llama-server timed out after 120s", exc_info=True)
         return []
     except requests.exceptions.RequestException as e:
-        logger.error("llama-server request failed: %s", e)
+        logger.error(f"llama-server request failed: {e}", exc_info=True)
         return []
 
     try:
@@ -268,7 +281,10 @@ def correct(text: str, context_hint: Optional[str] = None) -> List[Correction]:
         raw = body["choices"][0]["message"]["content"]
         data = _parse_json_with_repair(raw)
     except (KeyError, IndexError, json.JSONDecodeError, ValueError) as e:
-        logger.error("Failed to parse llama-server response: %s — raw: %.200s", e, resp.text)
+        logger.error(
+            f"Failed to parse llama-server response: {e} — raw: {resp.text[:200]}",
+            exc_info=True,
+        )
         return []
 
     corrections: List[Correction] = []
@@ -288,18 +304,20 @@ def correct(text: str, context_hint: Optional[str] = None) -> List[Correction]:
                 start = lower_text.find(lower_orig)
                 if start == -1:
                     continue
-                original = text[start:start + len(original)]
+                original = text[start : start + len(original)]
             if start in seen_starts:
                 continue
             seen_starts.add(start)
             end = start + len(original)
-            corrections.append(Correction(
-                start=start,
-                end=end,
-                original=original,
-                suggestions=[suggestion],
-                type="grammar",
-            ))
+            corrections.append(
+                Correction(
+                    start=start,
+                    end=end,
+                    original=original,
+                    suggestions=[suggestion],
+                    type="grammar",
+                )
+            )
         except (KeyError, TypeError, ValueError):
             continue
 

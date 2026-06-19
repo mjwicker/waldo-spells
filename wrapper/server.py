@@ -12,7 +12,10 @@ import requests as _requests
 
 sys.path.insert(0, str(Path(__file__).parent))
 import tier_router
+from logging_utils import WaldoSpellsLogger
 from protocol import Request
+
+logger = WaldoSpellsLogger("server")
 
 # llama-server port for the Smart tier (Qwen2.5-3B-Instruct).
 # Kept distinct from production 8080 so wrapper can proxy without a naming clash.
@@ -34,7 +37,7 @@ def _system_ram_bytes() -> int:
                     kb = int(line.split()[1])
                     return kb * 1024
     except OSError:
-        pass
+        logger.error("Failed to read /proc/meminfo for RAM detection", exc_info=True)
     return 0
 
 
@@ -46,11 +49,10 @@ def _smart_hardware_ok() -> bool:
 def _llama_server_reachable() -> bool:
     """Ping llama-server health endpoint. Returns False if not running."""
     try:
-        r = _requests.get(
-            f"http://{_LLAMA_HOST}:{_LLAMA_PORT}/health", timeout=2
-        )
+        r = _requests.get(f"http://{_LLAMA_HOST}:{_LLAMA_PORT}/health", timeout=2)
         return r.status_code == 200
     except _requests.exceptions.RequestException:
+        logger.error("llama-server health check failed", exc_info=True)
         return False
 
 
@@ -103,12 +105,15 @@ class AnalyzeHandler(BaseHTTPRequestHandler):
         else:
             msg = "Smart tier ready"
 
-        self._send_json(200, {
-            "available": available,
-            "hardware_ok": hw_ok,
-            "server_ok": srv_ok,
-            "message": msg,
-        })
+        self._send_json(
+            200,
+            {
+                "available": available,
+                "hardware_ok": hw_ok,
+                "server_ok": srv_ok,
+                "message": msg,
+            },
+        )
 
     def do_POST(self):
         if self.path == "/analyze":
@@ -124,6 +129,7 @@ class AnalyzeHandler(BaseHTTPRequestHandler):
         try:
             return json.loads(self.rfile.read(length))
         except (json.JSONDecodeError, ValueError):
+            logger.error("Failed to parse request body as JSON", exc_info=True)
             self._send_json(400, {"error": "invalid_json"})
             return None
 
@@ -137,8 +143,15 @@ class AnalyzeHandler(BaseHTTPRequestHandler):
         context_hint = body.get("context_hint")
 
         if not isinstance(text, str) or not text.strip():
-            self._send_json(200, {"corrections": [], "latency_ms": 0.0,
-                                  "tier_used": tier, "error": None})
+            self._send_json(
+                200,
+                {
+                    "corrections": [],
+                    "latency_ms": 0.0,
+                    "tier_used": tier,
+                    "error": None,
+                },
+            )
             return
 
         tier_str: str = tier if isinstance(tier, str) else "fast"
@@ -176,34 +189,45 @@ class AnalyzeHandler(BaseHTTPRequestHandler):
         context_hint = body.get("context_hint")
 
         if not isinstance(text, str) or not text.strip():
-            self._send_json(200, {
-                "corrections": [], "latency_ms": 0.0,
-                "available": True, "error": None,
-            })
+            self._send_json(
+                200,
+                {
+                    "corrections": [],
+                    "latency_ms": 0.0,
+                    "available": True,
+                    "error": None,
+                },
+            )
             return
 
         hint_str: str | None = context_hint if isinstance(context_hint, str) else None
 
         # Hardware gate
         if not _smart_hardware_ok():
-            self._send_json(200, {
-                "available": False,
-                "corrections": [],
-                "latency_ms": 0.0,
-                "message": "Smart tier requires more RAM (8 GB minimum)",
-                "error": "hardware_gate",
-            })
+            self._send_json(
+                200,
+                {
+                    "available": False,
+                    "corrections": [],
+                    "latency_ms": 0.0,
+                    "message": "Smart tier requires more RAM (8 GB minimum)",
+                    "error": "hardware_gate",
+                },
+            )
             return
 
         # llama-server reachability
         if not _llama_server_reachable():
-            self._send_json(200, {
-                "available": False,
-                "corrections": [],
-                "latency_ms": 0.0,
-                "message": "Smart tier offline — start llama-server to enable rewrites",
-                "error": "server_unreachable",
-            })
+            self._send_json(
+                200,
+                {
+                    "available": False,
+                    "corrections": [],
+                    "latency_ms": 0.0,
+                    "message": "Smart tier offline — start llama-server to enable rewrites",
+                    "error": "server_unreachable",
+                },
+            )
             return
 
         # Proxy through the existing llama_backend (reuses all JSON-repair logic)
