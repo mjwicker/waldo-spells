@@ -162,3 +162,39 @@ def test_parse_json_with_repair_complex_multi_item_array():
     # This tests the regex repair on more complex structures
     assert "corrections" in result
     assert len(result["corrections"]) == 2
+
+
+# New tests for T-SPELLS-JSON-1: mixed bracket/paren close repair (e.g. [) → [])
+# These would have raised "All repair passes failed" before the fix; now succeed.
+# Sprint Close Gate: new tests added for parsing/repair change.
+
+def test_parse_json_with_repair_paren_array_close_simple():
+    """Pass 2 paren normalize: {"corrections": [)}  (bare [) case) → [] ."""
+    import json
+    malformed = '{"corrections": [)}'
+    result = llama_backend._parse_json_with_repair(malformed)
+    assert result == {"corrections": []}
+
+
+def test_parse_json_with_repair_paren_array_close_after_item():
+    """Pass 2: ) used after object item in array, e.g. ...} ) } → proper [] close."""
+    malformed = '{"corrections": [{"original": "of", "suggestion": "have"})}'
+    result = llama_backend._parse_json_with_repair(malformed)
+    assert result == {"corrections": [{"original": "of", "suggestion": "have"}]}
+
+
+def test_parse_json_with_repair_paren_normalize_multi():
+    """Pass 2 + subsequent: mixed paren on complex output still recovers items."""
+    malformed = '{"corrections": [{"original": "teh", "suggestion": "the"}, {"original": "recieve", "suggestion": "receive"}) }'
+    result = llama_backend._parse_json_with_repair(malformed)
+    assert "corrections" in result
+    assert len(result["corrections"]) == 2
+    assert result["corrections"][0]["original"] == "teh"
+
+
+def test_parse_json_with_repair_paren_normalize_then_later_pass_append():
+    """Pass 2 paren fix turns ) to ], leaving unclosed root obj; later pass 5 appends }."""
+    # Input has paren close + missing final } for object (common truncation mix)
+    malformed = '{"corrections": [{"original": "x", "suggestion": "y"} )'
+    result = llama_backend._parse_json_with_repair(malformed)
+    assert result == {"corrections": [{"original": "x", "suggestion": "y"}]}

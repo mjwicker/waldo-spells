@@ -153,23 +153,29 @@ Input: "She went to the store."
 Output: {"corrections": []}
 
 Rules:
+- Use ONLY square brackets [ ] to delimit the "corrections" array; NEVER use round parentheses ( ) for arrays or structural elements.
+- The array MUST be opened by [ immediately after the colon and closed by ] immediately before the final }.
 - Each item in the array must be closed with } before the next , or ]
 - The array must be closed with ] before the outer }
+- Bad example to avoid: {"corrections": [)}  or {"corrections": [...])}  -- wrong closer.
 - Preserve the author's meaning. Do not paraphrase or rewrite. Flag only clear errors."""
 
 
 def _parse_json_with_repair(raw: str) -> dict:
     """Parse JSON from model output, applying bracket/brace repair if needed.
 
-    Qwen2.5-3B reliably emits `}}]` instead of `}]` — one extra closing brace
-    per array object, before the closing bracket.  Apply targeted repairs before
-    raising so the harness sees corrections instead of parse errors.
+    Qwen2.5-3B can emit malformed JSON such as extra closing braces (`}}]`),
+    missing closers, truncation, junk, or mixed brackets/parens (e.g. [) or })
+    in place of [] / }]. Apply targeted repairs before raising so the harness
+    sees corrections instead of silent drop on "All repair passes failed".
 
     Repair passes (applied in order until one succeeds):
       1. Direct parse — no repair needed.
-      2. Replace `}}]` with `}]` (extra closing brace before array close).
-      3. Replace `}]` with `}]}` (missing outer closing brace — truncated output).
-      4. Strip trailing non-JSON characters and retry.
+      2. Normalize parens/brackets: fix [) → [], }) → }], ) } → ] }  (mixed [) cases).
+      3. Replace `}}]` with `}]` (extra closing brace before array close).
+      4. Replace `}(...)$` pattern with `}]}` (missing array close bracket).
+      5. Truncated array: append outer `}` if ends with `]`.
+      6. Strip junk after last `}` (also re-apply paren+brace repairs).
     """
     # Pass 1: try raw parse first
     try:
@@ -177,46 +183,63 @@ def _parse_json_with_repair(raw: str) -> dict:
     except json.JSONDecodeError:
         pass
 
-    # Pass 2: replace `}}+]` → `}]`  (one or more extra closing braces before array close)
-    repaired = re.sub(r"\}(\}+)\]", "}]", raw)
+    repaired = raw
+
+    # Pass 2: normalize parens used as brackets/closers (qwen2.5-3b [) / }) slips)
+    # Targeted structural patterns only (bare } ) etc never appear inside "strings")
+    # Covers reported: {"corrections": [)}  and {"corrections": [{...}])}
+    repaired = re.sub(r"\}\s*\)", "}]", repaired)
+    repaired = re.sub(r"\[\s*\)", "[]", repaired)
+    repaired = re.sub(r"\)\s*\}", "]}", repaired)
     try:
         result = json.loads(repaired)
-        logger.debug("[llama_backend] JSON repaired via pass 2 (}}] → }])")
+        logger.debug("[llama_backend] JSON repaired via pass 2 (paren→bracket normalize [)→[] })→}])")
         return result
     except json.JSONDecodeError:
         pass
 
-    # Pass 3: missing `]` — model emits `}}}` instead of `}]}`.
-    # Pattern: last array item ends with `}}+` without a `]` before outer close.
-    repaired3 = re.sub(r"\}(\}+)$", "}]}", repaired.rstrip())
+    # Pass 3: replace `}}+]` → `}]`  (one or more extra closing braces before array close)
+    repaired = re.sub(r"\}(\}+)\]", "}]", repaired)
     try:
-        result = json.loads(repaired3)
-        logger.debug("[llama_backend] JSON repaired via pass 3 (}}+ → }]})")
+        result = json.loads(repaired)
+        logger.debug("[llama_backend] JSON repaired via pass 3 (}}] → }])")
         return result
     except json.JSONDecodeError:
         pass
 
-    # Pass 4: truncated — missing closing `}` after array; append it
-    repaired4 = repaired.rstrip()
-    if repaired4.endswith("]"):
-        candidate = repaired4 + "}"
+    # Pass 4: missing `]` — model emits `}}}` instead of `}]}`.
+    # Pattern: last array item ends with `}}+` without a `]` before outer close.
+    repaired4 = re.sub(r"\}(\}+)$", "}]}", repaired.rstrip())
+    try:
+        result = json.loads(repaired4)
+        logger.debug("[llama_backend] JSON repaired via pass 4 (}}+ → }]})")
+        return result
+    except json.JSONDecodeError:
+        pass
+
+    # Pass 5: truncated — missing closing `}` after array; append it
+    repaired5 = repaired.rstrip()
+    if repaired5.endswith("]"):
+        candidate = repaired5 + "}"
         try:
             result = json.loads(candidate)
-            logger.debug("[llama_backend] JSON repaired via pass 4 (appended outer })")
+            logger.debug("[llama_backend] JSON repaired via pass 5 (appended outer })")
             return result
         except json.JSONDecodeError:
             pass
 
-    # Pass 5: strip junk after the last valid `}` and retry
+    # Pass 6: strip junk after the last valid `}` and retry
     last_brace = raw.rfind("}")
     if last_brace != -1:
         candidate = raw[: last_brace + 1]
-        # Apply pass-2 repair on truncated string too
+        # Apply paren-normalize + brace repairs on truncated string too
+        candidate = re.sub(r"\}\s*\)", "}]", candidate)
+        candidate = re.sub(r"\[\s*\)", "[]", candidate)
         candidate = re.sub(r"\}(\}+)\]", "}]", candidate)
         try:
             result = json.loads(candidate)
             logger.debug(
-                "[llama_backend] JSON repaired via pass 5 (truncated at last })"
+                "[llama_backend] JSON repaired via pass 6 (truncated at last })"
             )
             return result
         except json.JSONDecodeError:
