@@ -1,6 +1,12 @@
 """Metrics computation for test results."""
 
+import math
 from statistics import mean
+
+# ── Semantic similarity thresholds ────────────────────────────────────────────
+SEMANTIC_GOLD   = 0.95   # essentially the same word/phrase
+SEMANTIC_SILVER = 0.80   # right semantic neighbourhood, different word
+SEMANTIC_BRONZE = 0.60   # related but drifting
 
 
 def _overlaps(a_start: int, a_end: int, b_start: int, b_end: int) -> bool:
@@ -205,6 +211,82 @@ def by_tier(results: list) -> dict[str, dict[str, float | int]]:
             "n_not_applicable": len(tier_results) - len(applicable),
         }
     return output
+
+
+def _cosine_similarity(a: list, b: list) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = sum(x * x for x in a) ** 0.5
+    norm_b = sum(x * x for x in b) ** 0.5
+    return dot / (norm_a * norm_b) if norm_a * norm_b > 0.0 else 0.0
+
+
+def semantic_match_score(results: list) -> dict:
+    """Embed predicted and gold replacement text for each TP pair with MiniLM
+    and return cosine similarity statistics.
+
+    Requires models/all-MiniLM-L6-v2-onnx/model_int8.onnx on disk.
+    Returns {"available": False, ...} gracefully when model is absent.
+
+    Thresholds:
+      gold   >= 0.95 — essentially the same word/phrase
+      silver  0.80–0.95 — right semantic neighbourhood, different word
+      bronze  0.60–0.80 — related but drifting
+      miss   < 0.60 — different semantic field
+    """
+    try:
+        import os, sys
+        sys.path.insert(0, os.path.dirname(__file__))
+        import onnx_backend
+        available = onnx_backend.minilm_available()
+    except ImportError:
+        available = False
+
+    _empty = {"mean": float("nan"), "n_scored": 0,
+               "gold": 0.0, "silver": 0.0, "bronze": 0.0, "miss": 0.0,
+               "available": available}
+
+    if not available:
+        return _empty
+
+    scores = []
+    for result in results:
+        for correction in result.corrections:
+            c_start, c_end = correction["start"], correction["end"]
+            pred_text = _normalize(
+                correction.get("correction", correction.get("replacement", ""))
+            )
+            for expected in result.expected:
+                if _overlaps(c_start, c_end, expected["start"], expected["end"]):
+                    gold_text = _normalize(expected.get("correction", ""))
+                    if pred_text and gold_text:
+                        try:
+                            sim = _cosine_similarity(
+                                onnx_backend.embed(pred_text),
+                                onnx_backend.embed(gold_text),
+                            )
+                            scores.append(sim)
+                        except Exception:
+                            pass
+                    break
+
+    if not scores:
+        return _empty
+
+    n = len(scores)
+    gold   = sum(1 for s in scores if s >= SEMANTIC_GOLD)
+    silver = sum(1 for s in scores if SEMANTIC_SILVER <= s < SEMANTIC_GOLD)
+    bronze = sum(1 for s in scores if SEMANTIC_BRONZE <= s < SEMANTIC_SILVER)
+    miss   = sum(1 for s in scores if s < SEMANTIC_BRONZE)
+
+    return {
+        "mean":     sum(scores) / n,
+        "n_scored": n,
+        "gold":     gold   / n,
+        "silver":   silver / n,
+        "bronze":   bronze / n,
+        "miss":     miss   / n,
+        "available": True,
+    }
 
 
 def by_error_type(results: list) -> dict[str, dict[str, float | int]]:

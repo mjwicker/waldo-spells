@@ -35,7 +35,7 @@ from runner import run_all
 from metrics import (
     by_input_type, by_tier, by_error_type,
     latency_stats, context_detection_accuracy, tone_accuracy,
-    string_match_rate,
+    string_match_rate, semantic_match_score,
 )
 
 _SOURCES_YAML = Path(__file__).parent / "sources.yaml"
@@ -157,6 +157,39 @@ def write_summary(results, path: Path, run_id: str) -> None:
                 f"{m['latency_p50']:.2f} |\n"
             )
         f.write("\n")
+
+        # Semantic match (MiniLM cosine similarity — per tier + overall)
+        f.write("## Semantic Match Score (MiniLM cosine similarity)\n\n")
+        tier_sem = {}
+        for tier in sorted(tier_metrics.keys()):
+            tier_rows = [r for r in results if r.tier == tier]
+            tier_sem[tier] = semantic_match_score(tier_rows)
+        overall_sem = semantic_match_score(results)
+
+        if not overall_sem["available"]:
+            f.write("_MiniLM model not available — run `python scripts/export_cola_onnx.py` or check models/all-MiniLM-L6-v2-onnx/_\n\n")
+        else:
+            f.write("| Tier | Mean sim | n scored | Gold ≥0.95 | Silver 0.80–0.95 | Bronze 0.60–0.80 | Miss <0.60 |\n")
+            f.write("|------|----------|----------|------------|------------------|------------------|------------|\n")
+            for tier in sorted(tier_metrics.keys()):
+                s = tier_sem[tier]
+                if s["n_scored"] == 0:
+                    f.write(f"| {tier} | n/a | 0 | — | — | — | — |\n")
+                else:
+                    mean_s = f"{s['mean']:.3f}" if not math.isnan(s["mean"]) else "n/a"
+                    f.write(
+                        f"| {tier} | {mean_s} | {s['n_scored']} "
+                        f"| {s['gold']:.1%} | {s['silver']:.1%} "
+                        f"| {s['bronze']:.1%} | {s['miss']:.1%} |\n"
+                    )
+            if overall_sem["n_scored"] > 0:
+                mean_s = f"{overall_sem['mean']:.3f}" if not math.isnan(overall_sem["mean"]) else "n/a"
+                f.write(
+                    f"| **all** | **{mean_s}** | {overall_sem['n_scored']} "
+                    f"| {overall_sem['gold']:.1%} | {overall_sem['silver']:.1%} "
+                    f"| {overall_sem['bronze']:.1%} | {overall_sem['miss']:.1%} |\n"
+                )
+            f.write("\n")
 
         # Per-input-type
         type_metrics = by_input_type(results)
@@ -358,6 +391,18 @@ def main() -> None:
 
     print(f"Writing summary to {summary_path}...")
     write_summary(results, summary_path, run_id=args.run_id)
+
+    # Semantic match summary (stdout)
+    overall_sem = semantic_match_score(results)
+    if overall_sem["available"] and overall_sem["n_scored"] > 0:
+        print(
+            f"Semantic match (MiniLM, {overall_sem['n_scored']} TP pairs): "
+            f"mean={overall_sem['mean']:.3f} | "
+            f"gold={overall_sem['gold']:.1%} silver={overall_sem['silver']:.1%} "
+            f"bronze={overall_sem['bronze']:.1%} miss={overall_sem['miss']:.1%}"
+        )
+    elif not overall_sem["available"]:
+        print("Semantic match: MiniLM not available — skipped")
 
     # Quality gate check: at least one non-skipped tier must reach F1 >= QUALITY_GATE_F1
     tier_metrics = by_tier(results)
