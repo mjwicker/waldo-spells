@@ -249,7 +249,7 @@ class TestCliExitCodes:
     def test_english_edits_not_found_exits_1(self):
         """Exit code 1 with clear message when English edits not found."""
         result = subprocess.run(
-            ["python", "scripts/generate_c4200m_pairs.py", "--c4-dir", "/nonexistent"],
+            [sys.executable, "scripts/generate_c4200m_pairs.py", "--c4-dir", "/nonexistent"],
             cwd=_REPO_ROOT,
             capture_output=True,
             text=True,
@@ -264,7 +264,7 @@ class TestCliExitCodes:
             output_dir = Path(tmpdir)
             result = subprocess.run(
                 [
-                    "python",
+                    sys.executable,
                     "scripts/generate_c4200m_pairs.py",
                     "--lang", "de",
                     "--dry-run",
@@ -339,7 +339,7 @@ class TestDryRunMode:
             output_dir = Path(tmpdir)
             result = subprocess.run(
                 [
-                    "python",
+                    sys.executable,
                     "scripts/generate_c4200m_pairs.py",
                     "--lang", "de",
                     "--dry-run",
