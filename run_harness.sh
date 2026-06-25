@@ -1,6 +1,7 @@
 #!/bin/bash
-# Run the Waldo Spells test harness with all three tiers.
-# Usage: ./run_harness.sh [--tiers fast,better,smart] [--corpus path] [extra args]
+# Run the Waldo Spells test harness.
+# Usage: ./run_harness.sh [--full] [--tiers fast,better,smart] [--corpus path] [extra args]
+#   --full  run all four tiers (fast,better,smart,edge) using sources.yaml (default is fast,better,smart)
 
 export CT2_MODEL_PATH=/home/michaelwicker/Documents/Waldo/WaldoSpells/models/gec-t5_small-ct2
 export LLAMA_MODEL_PATH=/home/michaelwicker/Documents/Waldo/WaldoSpells/models/qwen2.5-3b-instruct-q4_k_m.gguf
@@ -12,4 +13,14 @@ export LLAMA_SERVER_BIN=/home/michaelwicker/Documents/Waldo/WaldoAI/models/llama
 
 source "$(dirname "$0")/venv/bin/activate"
 
-python3 -m harness.report "$@"
+# --full: expand to all four tiers before passing remaining args to report.py
+ARGS=()
+for arg in "$@"; do
+    if [ "$arg" = "--full" ]; then
+        ARGS+=(--tiers fast,better,smart,edge)
+    else
+        ARGS+=("$arg")
+    fi
+done
+
+python3 -m harness.report "${ARGS[@]}"
